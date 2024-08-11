@@ -1,0 +1,35 @@
+---
+title: "CARB Project Modeling (2.2)"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+# Intro
+This is modeling for the CARB AHSC Analysis Project.
+Continued from `2.1_modeling.Rmd1`, we are starting from scratch for clarity and because we have received a new dataset including a Hispanic flag.
+
+```{r env}
+library(tidyverse)
+```
+
+# Data Load/Exploration
+```{r Load Data Update}
+data.v6 <- read_csv('data/DataforExport_V6.csv')
+data.v6 %>% names() %>%
+  sapply(function(x) x %in% names(data.bak)) %>%
+  summary()
+
+# Add rownumbers as id
+data.v6 <- data.v6 %>% 
+  mutate(id = row_number()) %>% 
+  select(id, everything())
+
+# Load CBSA dictionary for future use
+cbsa_codes <- read_csv('../data/cbsa2fipsxw.csv')
+cbsa_code_dict <- cbsa_codes %>% distinct(cbsacode, cbsatitle)
+
+# create new dataframe
+df.clean <- tibble(data.frame(id = data$id, vmt = data$daily_vmt, veh_trips = data$num_privatevehicle_trips))
+df.clean
+````

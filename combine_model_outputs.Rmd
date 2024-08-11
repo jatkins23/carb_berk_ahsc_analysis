@@ -1,0 +1,201 @@
+---
+title: "Load Regression Results"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r env}
+library(tidyverse)
+```
+
+```{r load_all_files}
+dir_path <- 'output'
+all_output_files <- list.files(dir_path)
+file_names <- all_output_files[str_detect(all_output_files, '4')]
+
+dfs <- list()
+for(f in sort.default(file_names, decreasing = T)) {
+  dfs[[f]] <- read_csv(paste0(dir_path,'/', f))
+}
+
+names(dfs)
+names(dfs) <- names(dfs) %>% str_replace('regression_output', '') %>% str_replace('.csv', '')
+names(dfs)
+
+dfs[1] # v
+dfs[2] # Term
+dfs[3] # v
+dfs[4] # v
+dfs[5] # Term
+dfs[6] # v
+dfs[7] # v
+dfs[8] # v
+dfs[9] # Term
+
+for(i in c(1, 3, 4, 6, 7, 8)) {
+  dfs[[i]]$Term <- dfs[[i]]$v
+}
+
+# Fix the term for intercept and log(scale)
+dfs[[2]][1,]$Term <- '(Intercept)'
+dfs[[2]][nrow(dfs[[2]]),]$Term <- 'Log(scale)'
+
+dfs[[5]][1,]$Term <- '(Intercept)'
+dfs[[5]][nrow(dfs[[5]]),]$Term <- 'Log(scale)'
+
+dfs[[9]][1,]$Term <- '(Intercept)'
+dfs[[9]][nrow(dfs[[9]]),]$Term <- 'Log(scale)'
+
+for(i in 1:length(dfs)) {
+  dfs[[i]]$v <- paste0(dfs[[i]]$Term, if_else(is.na(dfs[[i]]$Value), '', paste0(' (', str_replace(dfs[[i]]$Value, '^_+', ' '), ')')))
+}
+
+for(i in 1:length(dfs)) {
+  dfs[[i]] <- 
+    dfs[[i]] %>% 
+    rename(
+      est = estimate,
+      p = p.value
+    )
+}
+
+# Standard
+std_outputs <-
+  dfs[['4']] %>% # Standard
+  # Standard Under 75k
+  left_join(
+    dfs[['4_under75k']],
+    suffix = c('', '.<75k'),
+    by = 'v'
+  ) %>%
+  # Standard Over 75k
+  left_join(
+    dfs[['4_over75k']],
+    suffix = c('', '.75k+'),
+    by = 'v'
+  )
+
+open_outputs <- 
+  dfs[['wf_4']] %>%
+  # Open-ended under 75k
+  left_join(
+    dfs[['4_wf_under75k']],
+    suffix = c('', '.<75k'),
+    by = 'v'
+  ) %>%
+  # Open-ended over 75k
+  left_join(
+    dfs[['4_wf_over75k']],
+    suffix = c('', '.75k+'),
+    by = 'v'
+  )
+
+
+simplified_outputs <- 
+  # Simplified Full
+  dfs[['4_simplified']] %>%
+  # Simplified Under 75k
+  left_join(
+    dfs[['4_simplified_under75k']],
+    suffix = c('', '.<75k'),
+    by = 'v'
+  ) %>%
+  left_join(
+    dfs[['4_simplified_over75k']],
+    suffix = c('', '.75k+'),
+    by = 'v'
+  )
+  
+# std_outputs %>% write_csv('output/model4_std_output.csv')
+# open_outputs %>% write_csv('output/model4_open_output.csv')
+# simplified_outputs %>% write_csv('output/model4_simple_output.csv')
+```
+
+# check numbers
+```{r }
+
+# Standard: dummy_data__cleaned
+dummy_data__cleaned
+# Standard (<75k): dummy_data__cleaned.under75k
+# Standard (75k+): dummy_data__cleaned.over75k
+
+# Open-Ended: dummy_data.plus_waterfall
+# Open-Ended (<75k): dummy_data.plus_waterfall.under75k
+# Open-Ended (75k+): dummy_data.plus_waterfall.over75k
+
+# Simplified: dummy_data.simplified
+
+```
+
+```{r}
+ls()[str_detect(ls(), 'model\\.')]
+
+model$iter # <- 3
+model.over75k$iter # <- 300
+model.under75k$iter # <- 300
+model.wf$iter # <- 3
+model
+
+```
+
+```{r }
+std_outputs#[1:5,c(2,4,7)] %>%
+
+std.mutated <- list(
+  'std' = std_outputs[c(1:6, nrow(std_outputs)), c(2, 4, 7)], 
+  'under75k' = std_outputs[c(1:6, nrow(std_outputs)), c(2,10,13)] %>% set_names(c('Term','estimate', 'p.value')), 
+  'over75k' = std_outputs[c(1:6, nrow(std_outputs)), c(2,16,19)] %>% set_names(c('Term','estimate', 'p.value'))
+) %>%
+  bind_rows(.id = 'model')
+
+colnames <- c(
+  '(Intercept)' = '(Intercept)',
+  'log(scale)' = 'Log(scale)',
+  'HasRail (.5mi)\n(binary)' = 'hasRail__Halfmi',
+  'Retail Density (.5mi)\n(189.7 units/sqmi)' = 'RetailDens__Halfmi__SE', ### TODO: Maintain this label output
+  'Population Density (2mi)\n(1.65k ppl/sqmi' = 'PopDens__2mi__SE',
+  'Employment Density (bg)\n(3.13k jobs/sqmi)' = 'EmployDens__bg__SE',
+  'Network Load Density (1mi)\n(.96k users/sqmi road network)' = 'NtwrkLoadDens__1mi__SE'
+)
+
+# Set Display Term
+std.mutated$term_display <- set_names(names(colnames), colnames)[std.mutated$Term]
+
+# Set Display Model Name
+std.mutated$model_display <- 
+  sapply(
+    seq_along(std.mutated$model), 
+    function(x) switch(
+      std.mutated$model[x],
+      'std' = '*Full*',
+      'under75k' = 'HH Income Under $75k',
+      'over75k' = 'HH Income Over $75k',
+      NA
+    ))
+std.mutated$model_display <- forcats::fct_inorder(std.mutated$model_display)
+
+std.mutated %>%
+  filter(Term %notin% c('(Intercept)', 'Log(scale)')) %>%
+  filter(model == 'std') %>%
+  ggplot(aes(x = term_display, y = estimate, fill = p.value)) +
+  geom_bar(stat = 'identity') +
+  labs(
+    y = '', #'Estimated Coefficient',
+    x = '' #'Built-Environment Factors (Z-Scores)'# ,
+    # title = 'Built-Environment Factors Effects on Avg VMT',
+    #subtitle = '(Controlling for Demographic factors)'
+  ) + 
+  scale_fill_gradient(low = 'darkred', high = 'red', guide = NULL) + 
+  scale_y_reverse() +
+  theme_grey() + 
+  theme(
+    #axis.text.x = element_text(angle = 0, hjust = .5, size = 15),
+    axis.text.x = element_text(angle = 30, hjust = .6, vjust = .6, size = 13),
+    plot.margin = margin(20, 40, 20, 50),
+  )# + 
+  #facet_wrap(~model_display)
+# open_outputs
+# simplified_outputs
+
+```

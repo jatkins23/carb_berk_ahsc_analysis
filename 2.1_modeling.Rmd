@@ -1,0 +1,3774 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  markdown: 
+    wrap: 72
+  chunk_output_type: console
+---
+
+```{r env}
+library(tidyverse)
+```
+
+# Data Load/Exploration
+
+```{r Load Data Update}
+# Save previous file ## DON'T Re-run or you will lose everyhting
+# data.bak <- data
+
+data <- read_csv('data/DataforExport_V5.csv')
+data %>% names() %>%
+  sapply(function(x) x %in% names(data.bak)) %>%
+  summary()
+
+names(data)[1] <- 'id'
+
+# Load CBSA dictionary for future use
+cbsa_codes <- read_csv('../data/cbsa2fipsxw.csv')
+cbsa_code_dict <- cbsa_codes %>% distinct(cbsacode, cbsatitle)
+
+# create new dataframe
+df.clean <- tibble(data.frame(id = data$id, vmt = data$daily_vmt, veh_trips = data$num_privatevehicle_trips))
+df.clean
+```
+
+```{r Back up Previous Files}
+df.clean.bak <- df.clean
+
+# Take output of this and paste below to run
+ls()[str_detect(ls(), '^df.')] %>% sapply(function(x) paste0(x, '.bak <- ', x)) %>% paste0(collapse = '\n') %>% cat('\n')
+
+# Paste commands here ## DON'T Re-run or you will lose everyhting
+
+# df.clean.bak <- df.clean
+# df.clean_OE.bak <- df.clean_OE
+# df.clean_scaled.bak <- df.clean_scaled
+# df.clean_z_scores.bak <- df.clean_z_scores
+# df.clean.bak.bak <- df.clean.bak
+# df.clean.z_scores.bak <- df.clean.z_scores
+# df.clean2.bak <- df.clean2
+# df.modeling.bak <- df.modeling
+# df.modeling_dummies.bak <- df.modeling_dummies
+# df.modeling_dummies2.bak <- df.modeling_dummies2
+# df.modeling.6.bak <- df.modeling.6
+# df.modeling.6.dummies.bak <- df.modeling.6.dummies
+# df.modeling.6.dummies.over75k.bak <- df.modeling.6.dummies.over75k
+# df.modeling.6.dummies.under75k.bak <- df.modeling.6.dummies.under75k
+# df.modeling.6.over75k.bak <- df.modeling.6.over75k
+# df.modeling.6.under75k.bak <- df.modeling.6.under75k
+# df.test.bak <- df.test
+# df.train.bak <- df.train
+# df6.shares.bak <- df6.shares
+```
+
+Define DVs
+```{r}
+# We're most likely gonna just use `daily_vmt`, but could to have
+dvs <- c(
+  'daily_vmt', 
+  'num_trips', 
+  'num_privatevehicle_trips', 
+  'num_publictransit_trips', 
+  'num_walk_trips', 
+  'num_bike_trips', 
+  'walk_trip_dist', 
+  'walk_trip_dur'
+)
+
+dv <- dv[1]
+
+```
+
+# Data Assembly/Cleaning
+
+## Demos - Standard Columns (Clean)
+
+### `HH_Income`
+```{r clean HH_Income}
+# `hhincome_updated`
+data$hhincome_updated %>% unique()
+# data %>% select(!!var_list)
+
+# Let's prepend a _ to the ones that need it 
+income_dictionary <- 
+  c(
+  '1: Less than $10,000'    = '01: $00_to_09k',
+  '2: $10,000 to $14,999'   = '02: $10_to_14k',
+  '3: $15,000 to $24,999'   = '03: $15_to_24k',
+  '4: $25,000 to $34,999'   = '04: $25_to_34k',
+  '5: $35,000 to $49,999'   = '05: $35_to_49k',
+  '6: $50,000 to $74,999'   = '06: $50_to_74k',
+  '7: $75,000 to $99,999'   = '07: $75_to_99k',
+  '8: $100,000 to $124,999' = '08: $100_to_124k',
+  '9: $125,000 to $149,999' = '09: $125_to_149k',
+  '10:$150,000 to $199,999' = '10: $150_to_199k',
+  '11: $200,000 or more'    = '11: $200k_and_up',
+  '12: Missing Data'        = '12: Missing Data'
+  )
+
+## Assign Income Cats
+df.clean$hhincome_cat <- income_dictionary[data$hhincome_updated]
+
+## Factorize
+# str_split_fixed(df.clean$hhincome_cat, ':', 2)[,1] %>% as.numeric()
+
+df.clean$hhincome_cat <- factor(df.clean$hhincome_cat, levels=df.clean$hhincome_cat %>% unique() %>% sort())
+
+# Value
+
+levels(df.clean$hhincome_cat)
+income_valuation <- 
+  c(
+      '01' = 5,
+      '02' = 12.5,
+      '03' = 20,
+      '04' = 30,
+      '05' = 42.5,
+      '06' = 62.5,
+      '07' = 87.5,
+      '08' = 112.5,
+      '09' = 137.5,
+      '10' = 175,
+      '11' = 250,
+      '12' = NA
+    )
+
+## Assign
+df.clean$hhincome_est <- income_valuation[substr(df.clean$hhincome_cat, 1, 2)]
+
+## Check
+
+n_total <- nrow(df.clean)
+
+df.clean %>%
+  group_by(hhincome_cat, hhincome_est) %>%
+  summarize(n = n(), `%` = n()/n_total)
+
+df.clean %>%
+  group_by(hhincome_cat) %>%
+  summarize(mean_est = mean(hhincome_est), n = n(), `%` = n()/n_total)
+
+```
+
+#### `HH_income` - Open-ended
+```{r income-OE}
+df.clean$hhincome_OE___NotMissing <- (df.clean$hhincome_cat != '12: Missing Data') %>% as.numeric()   # `as.numeric` just turns TRUE/FALSE
+df.clean$hhincome_OE____10k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 10) %>% as.numeric()
+df.clean$hhincome_OE____15k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 15) %>% as.numeric()
+df.clean$hhincome_OE____25k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 25) %>% as.numeric()
+df.clean$hhincome_OE____35k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 35) %>% as.numeric()
+df.clean$hhincome_OE____50k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 50) %>% as.numeric()
+df.clean$hhincome_OE____75k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 75) %>% as.numeric()
+df.clean$hhincome_OE___100k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 100) %>% as.numeric()
+df.clean$hhincome_OE___125k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 125) %>% as.numeric()
+df.clean$hhincome_OE___150k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 150) %>% as.numeric()
+df.clean$hhincome_OE___200k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 200) %>% as.numeric()
+
+df.clean %>% 
+  select(starts_with('hhincome_OE')) %>%
+  rename_with(\(x) str_replace(x, 'hhincome_OE___', '')) %>%
+  summarize(across(everything(), 
+                   .fns = c(n = \(x) sum(x, na.rm = T), 
+                            n_NA = \(x) sum(is.na(x))), 
+                   .names = '{.col}___{.fn}')) %>% 
+  pivot_longer(everything()) %>%
+  separate(name, into = c('col', 'metric'), sep = '___') %>%
+  pivot_wider(names_from = 'metric')
+```
+
+### `Age`
+```{r clean Age}
+# Age - un-dummify
+## First confirm, all only add to 1
+data %>% 
+  select(starts_with('age_')) %>%
+  mutate(sum = rowSums(across(where(is.numeric)))) %>%
+  filter(sum != 1) # 119 people don't have age
+
+age_buckets <- 
+  data %>% 
+  select(id, starts_with('age_')) %>%
+  pivot_longer(cols=-id) %>%
+  filter(value == 1) %>%
+  mutate(name = str_replace(name, 'age_', '')) %>%
+  select(id, bucket = name)
+
+df.clean$age_bucket <- 
+  data %>% 
+  left_join(
+    age_buckets,
+    by = 'id'
+  ) %>%
+  pull(bucket)
+
+
+# Age Bucket rename
+df.clean$age_bucket %>% unique()
+df.clean$age_bucket <- df.clean$age_bucket %>% replace_na('Missing')
+df.clean$age_bucket %>% unique()
+age_bucket_dictionary <- c(
+  "under_5" = '00_to_04',
+  "5_to_14"     = '05_to_14',
+  "15_to_24"    = '15_to_24',
+  "25_to_34"    = '25_to_34',
+  "35_to_44"    = '35_to_44',
+  "45_to_54"    = '45_to_54',
+  "55_to_64"    = '55_to_64',
+  "65_to_74"    = '65_to_74',
+  "75_and_above"   = '75_and_up',
+  'Missing'     = 'Missing'
+)
+
+## Assign new dictionary
+df.clean$age_bucket <- age_bucket_dictionary[df.clean$age_bucket]
+
+## Check
+df.clean$age_bucket %>% unique() %>% sort()
+
+## Factorize - we need to factorize so the open-ended buckets will work
+df.clean$age_bucket <- factor(df.clean$age_bucket, levels = sort(unique(df.clean$age_bucket)))
+
+# Value
+age_valuation <-
+  c(
+    '00_05' = 3,
+    '05_14' = 10,
+    '15_24' = 20,
+    '25_34' = 30,
+    '35_44' = 40,
+    '45_54' = 50,
+    '55_64' = 60,
+    '65_74' = 70,
+    '75_and_up' = 82,
+    'Missing' = NA,
+    NA
+  )
+
+## Assign Valuation
+df.clean$age_est <- age_valuation[df.clean$age_bucket]
+
+## Checks
+df.clean %>%
+  group_by(age_bucket, age_est) %>%
+  summarize(n = n(), `%` = n()/n_total)
+
+df.clean %>%
+  group_by(age_bucket) %>%
+  summarize(mean(age_est)) # perfect
+```
+
+#### Age - Open-ended
+```{r age-OE}
+# Open Ended - here
+df.clean$age_OE___NotMissing <- (df.clean$age_bucket != 'Missing') %>% as.numeric() # `as.numeric` just turns TRUE/FALSE into 1/0
+df.clean$age_OE___15_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 15))
+df.clean$age_OE___25_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 25))
+df.clean$age_OE___35_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 35))
+df.clean$age_OE___45_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 45))
+df.clean$age_OE___55_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 55))
+df.clean$age_OE___65_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 65))
+df.clean$age_OE___75_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 75))
+
+df.clean %>% 
+  select(starts_with('age_OE')) %>%
+  rename_with(\(x) str_replace(x, 'age_OE___', '')) %>%
+  summarize(across(everything(), .fns = c(n = \(x) sum(x, na.rm = T), n_NA = \(x) sum(is.na(x))), .names = '{.col}___{.fn}')) %>% 
+  pivot_longer(everything()) %>%
+  separate(name, into = c('col', 'metric'), sep = '___') %>%
+  pivot_wider(names_from = 'metric')
+  
+```
+
+### `Education`
+```{r clean Education}
+# Education
+data$educ_updated %>% unique()
+education_dictionary <- c(
+  "Less than a high school graduate" = 'LessThanHS',
+  "High school graduate or GED" = 'HighSchool',
+  "Some college or associates degree" = 'SomeCollege',
+  "Bachelor's degree" = 'Bachelors',
+  "Graduate degree or professional degree" = 'Graduate',
+  "Missing Data" = 'Missing'
+)
+df.clean$education <- education_dictionary[data$educ_updated]
+
+df.clean %>%
+  group_by(education) %>%
+  summarize(n = n(), `%` = n()/n_total)
+
+## Factorize 
+df.clean$education <- factor(df.clean$education, levels = c('LessThanHS', 'HighSchool', 'SomeCollege', 'Bachelors', 'Graduate', 'Missing'))
+
+levels(df.clean$education)
+```
+
+#### `Education` - Open-ended
+```{r education-OE}
+# See previous examples of `Open-Ended` for explanation
+df.clean$education_OE___NotMissing <- (df.clean$education != 'Missing') %>% as.numeric()
+df.clean$education_OE___HighSchool_and_up <- if_else(df.clean$education == 'Missing', 0, as.numeric(df.clean$education) > 1)
+df.clean$education_OE___SomeCollege_and_up <- if_else(df.clean$education == 'Missing', 0, as.numeric(df.clean$education) > 2)
+df.clean$education_OE___Bachelors_and_up <- if_else(df.clean$education == 'Missing', 0, as.numeric(df.clean$education) > 3)
+df.clean$education_OE___Graduate_and_up <- if_else(df.clean$education == 'Missing', 0, as.numeric(df.clean$education) > 4)
+
+
+df.clean %>% 
+  select(starts_with('education_OE')) %>%
+  rename_with(\(x) str_replace(x, 'education_OE___', '')) %>%
+  summarize(across(everything(), .fns = c(n = \(x) sum(x, na.rm = T), n_NA = \(x) sum(is.na(x))), .names = '{.col}___{.fn}')) %>% 
+  pivot_longer(everything()) %>%
+  separate(name, into = c('col', 'metric'), sep = '___') %>%
+  pivot_wider(names_from = 'metric')
+  
+```
+
+### `Race`
+```{r clean Race}
+# Race
+race_dictionary <- c(
+  'Some other race' = 'Other',
+  'Native Hawaiian or other Pacific Islander' = 'PI',
+  'American Indian or Alaska Native' = 'AI',
+  'Black or African American' = 'AfAm',
+  'Missing Data' = 'Missing',
+  'Multiple responses selected' = 'Multi',
+  'Asian' = 'Asian',
+  'White' = 'White'
+)
+
+df.clean$race <- race_dictionary[data$race_updated]
+
+## Checks
+df.clean$race %>% 
+  table()
+
+## Consolidated
+race_dictionary.consolidated <- c(
+  'Some other race' = 'AI_Other_Multiple',
+  'Native Hawaiian or other Pacific Islander' = 'AAPI',
+  'American Indian or Alaska Native' = 'AI_Other_Multiple',
+  'Black or African American' = 'AfAm',
+  'Missing Data' = 'Missing',
+  'Multiple responses selected' = 'AI_Other_Multiple',
+  'Asian' = 'AAPI',
+  'White' = 'White'
+)
+
+## Race Assigned
+df.clean$race_consolidated <- race_dictionary.consolidated[data$race_updated]
+df.clean$race_consolidated %>% table()
+
+df.clean %>%
+  group_by(race, race_consolidated) %>%
+  summarize(n = n(), `%` = n()/n_total)
+```
+Here we can combine the lower frequency races. We should have ethnicity somewhere??
+
+### `Sex`/`Homeown`/`HH_size`
+```{r other}
+# Addditional remove spaces
+df.clean$homeown <- 
+  data$homeown_updated %>% 
+  str_replace_all('Missing Data', 'Missing') %>%
+  str_replace_all('Error', 'Missing')
+
+df.clean$sex <- str_replace_all(data$sex_updated, 'Missing Data', 'Missing')
+
+# Consolidation
+df.clean$sex
+df.clean$sex_consolidated <- if_else(df.clean$sex == 'Male', 'Male', 'Not_Male')
+df.clean %>% 
+  group_by(sex, sex_consolidated) %>%
+  summarize(n = n(), `%` = n()/n_total)
+
+df.clean$hhsize <- data$hhsize_updated
+```
+
+### `Youngchild`, `hhsize`
+```{r clean-other}
+data %>% names() %>% paste0(collapse='\n') %>% cat() # youngchild_updated, hh_cbsa_updated
+df.clean$youngchildren <- data$youngchild_updated
+
+count(data, hhsize_updated)
+```
+
+## Built-Environment Columns (Assembly)
+
+### Rename Cols
+```{r built-enviornment col assembly}
+names(data) %>% paste0(collapse='\n') %>% cat()
+
+BE_suffixes <- c('bg','half','one','two')
+
+data %>%
+  select(ends_with('bg')) %>%
+  names()
+  #select(ends_with(BE_suffixes))
+
+data %>%
+  select(starts_with('NumBusStops'))
+
+
+# Fix columns names
+data <-
+  data %>%
+  rename(
+    StreetDens_OX24_two   = StreetDens_OX24_two_updated,
+    NetLoadDens_OX24_two  = NetLoadDens_OX24_two_updated,
+    JobsWithin45_Car      = JobsWithin45_Car_2,
+    JobsWithin45_Transit   = JobsWithin45_Transit_3,
+    distrail_car_raw       = Car_DistToRail,
+    distrail_walk_raw      = Walk_DistToRail,
+    distrail_car_eighth    = distrail_eighthmi_car, 
+    distrail_car_quarter   = distrail_quartmi_car, 
+    distrail_car_3eighth   = distrail_3eighthmi_car, 
+    distrail_car_half      = distrail_halfmi_car, 
+    distrail_car_3quarter  = distrail_3quartmi_car, 
+    distrail_car_one       = distrail_onemi_car, 
+    distrail_car_far       = distrail_far_car, 
+    distrail_walk_eighth   = distrail_eighthmi_walk, 
+    distrail_walk_quarter  = distrail_quartmi_walk, 
+    distrail_walk_3eighth  = distrail_3eighthmi_walk, 
+    distrail_walk_half     = distrail_halfmi_walk, 
+    distrail_walk_3quarter = distrail_3quartmi_walk, 
+    distrail_walk_one      = distrail_onemi_walk,
+    distrail_walk_far      = distrail_far_walk,
+    # NumBusStops_bg         = NumBusStops_bg, 
+    NumBusStops_quarter    = NumBusStops_quartmi,
+    NumBusStops_3eighth    = NumBusStops_3eighthmi,
+    NumBusStops_half       = NumBusStops_halfmi,
+    NumBusStops_one        = NumBusStops_onemi
+  )
+```
+
+### Standard BE Cols
+These are the BE cols with the standard suffixes
+```{r}
+BE_cols.std <- c(
+  'PopDens',
+  # Attraction Density
+  'EmpDens', 
+  'RetDens', 'EntDens', 'IndDens', 
+  'OffDens', 'SvcDens', 'HlthDens', 'EduDens', 'PubDens', 
+  # Job Wage Categories
+  #'LowWage', 'MedWage', 'HiWage',
+  # Street Network
+  'StreetDens_GF18','StreetDens_OX24', 'Missing_StreetDens_OX24',
+  'IntersectionDens_OX24', 'Missing_IntersectionDens_OX24',
+  'NetLoadDens_GF18', 'NetLoadDens_OX24'
+)
+
+
+
+# Thousand Columns
+data %>% select(ends_with('thous')) # So just `PopDens` and `EmpDens`
+
+# Check in on columns that haven't been yet used
+names(data)[!names(data) %>% sapply(\(x) (x %in% c(
+  names(df.clean),
+  data %>% select(starts_with('age')) %>% names(),
+  data %>% select(starts_with('educ')) %>% names(),
+  data %>% select(ends_with('updated')) %>% names(),
+  data %>% select(ends_with('thous')) %>% names(),
+  data %>% select(starts_with('Missing')) %>% names(),
+  # "race_updated", "sex_updated", "age_under_5", "age_5_to_14", "age_15_to_24", "age_25_to_34", "age_35_to_44", "age_45_to_54", "age_55_to_64", "age_65_to_74", "age_75_and_above", "educ_updated", 
+  # 'educ_HS_above', 'educ_AA_above', 'educ_BA_above', 'educ_MS_above',
+  # 'hh_cbsa_name', 'hhsize_updated', 'hhincome_updated', 'homeown_updated', 'youngchild_updated',
+  do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_'))
+)))] %>% 
+  paste0(collapse = "', \n'") %>% 
+  cat()
+
+# Add to df.clean
+missing_cols <- c()
+for(c in BE_cols.std) {
+  for(s in BE_suffixes) {
+    colname <- paste0(c, '_', s)
+    if(colname %in% names(data)) {
+      df.clean[colname] <- data[colname]
+    } else {
+      cat(paste(colname, 'Missing\n'))
+      missing_cols <- c(missing_cols, colname)
+    }
+  }
+}
+
+missing_cols
+```
+
+### Other BE Cols
+```{r BE_cols.other}
+data %>% select(starts_with('distrail')) %>% names() %>% paste0(collapse = "', '")
+BE_cols.other <- c(
+  # Job Accessibility
+  'JobsWithin45_Car', 
+  'JobsWithin45_Transit',
+  # Distrail - Raw
+  'distrail_car_raw',
+  'distrail_walk_raw', 
+  # Distrail - Car
+  'distrail_car_eighth', 
+  'distrail_car_quarter', 
+  'distrail_car_3eighth', 
+  'distrail_car_half', 
+  'distrail_car_3quarter', 
+  'distrail_car_one', 
+  'distrail_car_far', 
+  # Distrail - Walk
+  'distrail_walk_eighth', 
+  'distrail_walk_quarter', 
+  'distrail_walk_3eighth', 
+  'distrail_walk_half', 
+  'distrail_walk_3quarter', 
+  'distrail_walk_one',
+  'distrail_walk_far', 
+  # Num Bus Stops
+  'NumBusStops_bg',
+  'NumBusStops_quarter',
+  'NumBusStops_3eighth',
+  'NumBusStops_half',
+  'NumBusStops_one',
+  # Bus Stop Density
+  'BusStopDens_bg'
+)
+
+names(data)[!sapply(names(data), 
+                    function(x) 
+                      (x %in% c(
+                        dvs,
+                        names(df.clean),  # Those already used
+                        data %>% select(ends_with('updated')) %>% names(), # Those already used and renamed
+                        data %>% select(starts_with('age_')) %>% names(), # Age column was consolidated
+                        data %>% select(starts_with('Missing_')) %>% names(), # Missing columns aren't really necessary
+                        do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_')),
+                        'hh_cbsa_name', # this is renamed
+                        # Add in thous
+                        paste0(do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_')), '_thous'),
+                        BE_cols.other
+                      ))
+                    )]
+
+
+# 
+do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_'))[do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_')) %>% 
+                                                                    sapply(function(x) x %notin% names(data))] # "BusStopDens_half" "BusStopDens_one"  "NumBusStops_two"  "BusStopDens_two" 
+
+
+# Assign
+for(c in BE_cols.other) {
+  df.clean[c] <- data[c]
+}
+
+# Check
+BE_cols.std_expanded<- do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_'))
+
+
+BE_cols.std_expanded[sapply(BE_cols.std_expanded, \(x) x %notin% names(df.clean))]
+```
+
+```{r CBSA code}
+# CBSA Code
+df.clean$cbsa_code <- data$hh_cbsa_updated
+df.clean$cbsa_title <- setNames(cbsa_code_dict$cbsatitle, cbsa_code_dict$cbsacode)[df.clean$cbsa_code]
+```
+
+## Additional Columns
+Mostl the missing values columns, but let's check whatever wasn't included already
+```{r}
+
+
+```
+
+## Back Cleanup
+Go back and look at the dataset as a whole to see what needs to be immediately removed
+
+```{r dataset-cleanup}
+# Replace `$`s in the column names
+df.clean <- df.clean %>% rename_with(\(x) str_replace(x, '\\$', ''))
+
+# Scale data by 1000s
+data %>% select(ends_with('thous'))
+df.clean %>% 
+  select(starts_with('PopDens'))
+
+# Which have nulls
+df.clean %>% 
+  summarize(across(everything(), \(x) sum(is.na(x)))) %>%
+  pivot_longer(everything()) %>%
+  filter(value != 0) # Basically just hhincome, cbsa_title
+
+# Now I want to see which columns didn't make it over
+names(data)
+```
+
+# Record Selection
+Choose which records to exclude outright
+```{r record-filtering}
+# Those with missing values
+data %>% 
+  summarize(across(starts_with('Missing'), sum)) %>% 
+  pivot_longer(everything()) %>%
+  arrange(value)
+
+## Missing Age: 119
+## Missing_HomeOwn: 11,
+
+# Do any still have infinite values
+data %>%
+  summarize(across(everything(), \(x) any(is.infinite(x)))) %>%
+  pivot_longer(everything()) %>%
+  filter(value)
+  
+```
+# Feature Tuning
+
+TODO: Feature selection
+
+
+## Multi-colinearity in BE cols
+Dealing with Multi-colinearity, winnowing down the variable list
+```{r}
+# Test cols
+BE_cols.std[!str_detect(BE_cols.std, 'Missing')]
+data %>% 
+  filter(daily_vmt < 300, !is.infinite(NetLoadDens_GF18_two)) %>%
+  select(any_of(do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_')))) %>% 
+  select(-c(ends_with(paste0('Wage','_', geo_level)), starts_with('Missing'))) %>%
+  cor() %>% 
+  as_tibble(rownames = 'var1') %>%
+  pivot_longer(cols = -var1, names_to = 'var2', values_to ='corr') %>%
+  arrange(desc(corr)) %>%
+  filter(corr != 1) %>%
+  extract(var1, into = c('var1', 'geo'),'(.*)_([^_]+$)') %>%
+  ggplot(aes(x = corr)) + 
+  stat_bin(bins=10) + 
+  facet_wrap(~geo)
+  
+df.just_BE_std <- data %>% 
+  filter(daily_vmt < 300, !is.infinite(NetLoadDens_GF18_two)) %>%
+  select(
+    daily_vmt, any_of(do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_')))) %>% 
+  select(-c(
+    ends_with(paste0('Wage','_', BE_suffixes)), 
+    starts_with('Missing'),
+    starts_with('PubDens')
+  ))
+
+model.just_BE_std <- AER::tobit(as.formula(paste0('daily_vmt ~', paste(names(select(df.just_BE_std, -daily_vmt)), collapse = '+'))), left = 0, data = df.just_BE_std)
+#car::vif()
+
+any(is.na(coef(model.just_BE_std)))
+summary(model.just_BE_std)
+
+vif.just_BE_std <- car::vif(model.just_BE_std) %>% as_tibble(rownames = 'var')
+
+vif.just_BE_std <- 
+  vif.just_BE_std %>%
+  extract(var, into = c('var', 'geo'), '(.*)_([^_]+$)')
+
+vif.just_BE_std %>%
+  arrange(desc(value)) %>%
+  print(n = 60)
+
+max_vif <- 5
+vif.just_BE_std%>%
+  ggplot(aes(y = as_factor(var), x = value)) + 
+  geom_bar(stat = 'identity') + 
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = .6, vjust = .6, size = 9),
+  ) + 
+  scale_x_log10() + 
+  labs(
+    title = 'Variance Inflation Test of Built-Env Characteristics',
+    y = NULL,
+    x = NULL
+  ) + 
+  geom_vline(xintercept = max_vif, color = 'red') + 
+  facet_wrap(~geo)
+```
+
+## Test each BE Var for best 
+
+
+# Model Building
+
+## (func-def) Tidy Tobit Model
+```{r tidy-tobit-model}
+tidy_tobit_model <- function(model, print=F) {
+  tidy_model <- summary(model)$coefficients %>% broom::tidy()
+  
+  tidy_model$term_name <- vars_to_include[tidy_model$term]
+  
+  tidy_model_clean <- tidy_model %>% 
+    select(v = term, term = term_name, everything()) %>%
+    separate(term, into = c('Term', 'Value'), sep = NAMES_SEP)
+  
+  if(print) {
+    tidy_model_clean %>%
+      print(n = 43)
+  }
+  
+  return(tidy_model_clean)
+}
+```
+
+## (6.5) Initial build with everything
+```{r intial model build} 
+library(fastDummies)
+# Dummify
+df.dummies <- df.clean %>% 
+  # filter(
+  #   age_OE___NotMissing == 1,
+  # ) %>%
+  select(-cbsa_code, -cbsa_title) %>%
+  dummy_cols(remove_selected_columns = TRUE, )
+
+# Set Features to use
+vars <- names(select(df.dummies, -dv))
+vars_to_ignore <- c('hhincome_cat_12: Missing Data','age_bucket_Missing','race_White','race_consolidated_AAPI','race_consolidated_AfAm','race_consolidated_AI_Other_Multiple','race_consolidated_Missing', 'race_consolidated_Other_Multiple_Missing','race_consolidated_White','education_Missing','homeown_Rent','sex_Missing','sex_consolidated_Male','sex_consolidated_Not_Male')
+vars <- vars[vars %notin% vars_to_ignore]
+vars <- tail(vars, 50)
+
+# Build Formula
+form <- as.formula(paste0(dv, ' ~ ',  '`', paste0(vars, collapse = '`+`'), '`'))
+
+# Run Model
+model <- AER::tobit(form, left = 0, data=df.dummies)
+summary(model)
+
+coef(model)
+
+# Check aliased coefficients
+paste0(names(coef(model)[is.na(coef(model))]), collapse="','")
+```
+
+## Feature Selection
+```{r initial-feature-selection}
+
+
+```
+
+### Demographic Controls
+```{r}
+demos.bucket_type <- 'open_ended' # one of c('discrete', 'continuous', 'open_ended')
+demos.consolidate_vars <- TRUE # Use slimmer versions of columns
+
+demo_controls <- c(
+  # Age 
+  switch(demos.bucket_type, 
+           discrete   = 'age_bucket',
+           open_ended = expr(starts_with('age_OE')), # add later
+           continuous = 'age_est',
+           NA
+  ),
+  # HH_Income
+  switch(demos.bucket_type,
+         discrete   = 'hhincome_cat',
+         open_ended = expr(starts_with('hhincome_OE')), # add later
+         continuous = 'hhincome_est',
+         NA
+  ),
+  'hhsize', 
+  # Education
+  switch(demos.bucket_type, 
+         discrete   = 'education',
+         open_ended = expr(starts_with('education_OE')), # add later
+         continuous = 'education',
+         NA),
+  # Sex
+  'sex' = if_else(demos.consolidate_vars, 'sex_consolidated', 'sex'), 
+  # Race
+  'race' = if_else(demos.consolidate_vars, 'race_consolidated', 'race'), 
+  # Home_Ownership
+  'homeown', 
+  # Young Children
+  'youngchildren'
+)
+
+#demo_quo <- quo(!!!demo_controls)
+df.clean %>% select(!!!demo_controls)
+```
+
+#
+## (7) Model Build with selected Demos and everything else 
+```{r model7-w-demos}
+df.modeling <- 
+  df.clean %>%
+  select(
+    id,
+    !!dv,
+    !!!demo_controls,
+    !!BE_cols.std_expanded,
+    !!BE_cols.other
+  ) %>%
+  filter(
+    vmt < 300,
+    age_OE___NotMissing == 1,
+    homeown != 'Missing'
+  ) %>%
+  select(
+    -age_OE___NotMissing, 
+    -starts_with('HiWage'), 
+    -starts_with('MedWage'),
+    -starts_with('LowWage'),
+    -starts_with('PubDens')
+  )
+
+# Dummify
+df.modeling.dummies <- dummy_cols(df.modeling, remove_selected_columns = TRUE, remove_most_frequent_dummy = TRUE)
+
+# Set Vars
+vars <- names(df.modeling.dummies)[3:length(names(df.modeling.dummies))]
+
+form <- as.formula(paste(dv, '~', paste0(vars, collapse='+')))
+
+# Model
+model <- AER::tobit(form, left=0, data=df.modeling.dummies)
+
+summary(model)
+which(is.na(coef(model)))
+```
+
+## (8) Model Build with selected Demos and everything else, except for Intersection/Street Density
+```{r model8}
+df.modeling8 <- 
+  df.clean %>%
+  select(
+    id,
+    !!dv,
+    !!!demo_controls,
+    !!BE_cols.std_expanded,
+    !!BE_cols.other
+  ) %>%
+  filter(
+    vmt < 300,
+    age_OE___NotMissing == 1,
+    homeown != 'Missing'
+  ) %>%
+  select(
+    -age_OE___NotMissing, 
+    -starts_with('HiWage'), 
+    -starts_with('MedWage'),
+    -starts_with('LowWage'),
+    -starts_with('PubDens'),
+    -contains('Intersection'),
+    -contains('StreetDens'),
+  )
+
+# Dummify
+df.modeling8.dummies <- dummy_cols(df.modeling8, remove_selected_columns = TRUE, remove_most_frequent_dummy = TRUE)
+
+# Set Vars
+vars8 <- names(df.modeling8.dummies)[3:length(names(df.modeling8.dummies))]
+
+form8 <- as.formula(paste(dv, '~', paste0(vars8, collapse='+')))
+
+# Model
+model8 <- AER::tobit(form8, left=0, data=df.modeling8.dummies)
+
+summary(model8)
+which(is.na(coef(model8)))
+
+summary(model8)
+```
+
+### Analyze Model8
+```{r}
+vif.8 <- tibble(var = names(car::vif(model8)), vif=car::vif(model8))
+vif.8 %>% 
+  arrange(desc(vif))
+
+vif.8 %>%
+  ggplot(aes(x = var, y=vif)) +
+  geom_bar(stat='identity') +
+  labs(
+    title = 'VIF of Built-Environment Data',
+    x = NULL,
+    y = NULL
+  )
+
+df.modeling8.dummies %>%
+  cor() %>%
+  ggcorrplot::ggcorrplot()
+```
+
+
+### Paring down BE Vars - Test out each geo-level
+#### Standard Cols
+Try out each `geo_level`
+```{r set-built-env-vars}
+BE_cols.std
+test_be_vars <- function(colname) {
+  df.modeling.test <- 
+    df.clean %>%
+    filter(vmt < 300) %>% # Removes 109 records
+    filter(age_OE___NotMissing == 1) %>% # RRemoves 119 records
+    filter(homeown != 'Missing') %>% # Removes 11 records
+    select(
+      id, 
+      !!dv,
+      !!!demo_controls,
+      starts_with(colname)
+    ) %>%
+    select(-age_OE___NotMissing) %>%
+    #mutate(across(starts_with(c), log, .names = '{.col}ln')) %>%
+    #select(starts_with(c)) %>%
+    #filter(across(starts_with(c), \(x) if_any(is.infinite(x))))
+  
+  # Dummify
+  df.modeling.test.dummies <- dummy_cols(df.modeling.test, remove_selected_columns = TRUE, remove_most_frequent_dummy = TRUE)
+  
+  # Set Var List
+  vars <- names(df.modeling.test.dummies)[3:length(names(df.modeling.test.dummies))]
+  form_str <- paste(dv, '~', paste0(vars, collapse='+\n'))
+  form <- as.formula(form_str)
+  
+  # Model
+  model.testing <- AER::tobit(form, left=0, data=df.modeling.test.dummies)
+  
+  if(any(is.na(coef(model.testing)))) {
+    print(coef(model.testing)[is.na(coef(model.testing))]) # <- confirmed 0
+    rlang::abort('Model has colinearity issues')
+  }
+  print(paste0(c, ': ', summary(model.testing)$iter, ' --- ', names(which.max(abs(coef(model.testing)[2:47])))))
+  
+  # use tidy_tobit_model from the `regression.Rmd` file
+  tidy_tobit_model(model.testing) %>% 
+    filter(v %in% c(BE_cols.std_expanded, BE_cols.other)) %>% 
+    select(v, c(estimate, p.value)) %>%
+    return()
+}
+
+# Run on all
+BE_tests <- set_names(BE_cols.std, BE_cols.std) %>% purrr::map(.f = test_be_vars)
+
+# Test what it looks like
+BE_tests %>% sapply(\(x) x %>% slice_min(p.value) %>% pull(v))
+#df.clean %>% select(starts_with('hhincome_OE'))
+
+# Combine results
+BE_tests.expanded <- 
+  BE_tests %>% 
+  bind_rows() %>%
+  extract(v, into=c('col', 'geo_level'), '(.*)_([^_]+$)') %>%
+  mutate(
+    significance_level = 1 - p.value,
+    pos_or_neg = if_else(estimate > 0, 'Positive', 'Negative'),
+    pos_or_neg = fct_rev(pos_or_neg)
+  ) %>% 
+  # Create an is_max column
+  group_by(col) %>%
+  mutate(is_max = p.value == min(p.value)) %>%
+  ungroup()
+  
+BE_tests.expanded %>%
+  filter(col %notin% c('LowWaeg', 'MedWage', 'HiWage', 'Missing_IntersectionDens_OX24', 'Missing_StreetDens_OX24')) %>%
+  ggplot(aes(x = geo_level, y = significance_level, fill = estimate, color = is_max)) +
+  #ggplot(aes(x = geo_level, y = estimate, fill = significance_level)) + 
+  geom_bar(stat = 'identity', size = 1) +
+  labs(
+    y = 'Significance Level',
+    x = 'Distance Band',
+    fill = 'Effect on VMT',
+    title = 'Built-Environment Factor Significance Levels',
+    subtitle = 'When using a single BE factor at all geo-levels with demographic controls'
+  ) + 
+  # scale_fill_manual(values = c('Negative' = 'firebrick', 'Positive' = 'springgreen3')) + 
+  scale_fill_gradientn(
+    colors = colorRampPalette(c('firebrick', '#efefef', 'springgreen3'))(5)
+  ) + 
+  geom_label(aes(label=scales::number(estimate, accuracy = .1))) + 
+  #scale_fill_gradient
+  scale_color_manual(values = c('TRUE' = 'grey7', 'FALSE' = 'white'), guide = NULL) + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  facet_wrap(~as_factor(col))
+```
+
+#### Non-standard columns
+```{r}
+BE_cols.other
+
+# These ones don't have the same organization with the suffixes, so we want to group them manuHly
+
+# Groups
+## distrail_walk
+df.model.distrail_walk <- 
+  df.clean %>%
+  filter(vmt < 300) %>%
+  filter(age_OE___NotMissing == 1) %>%
+  filter(homeown != 'Missing') %>%
+  select(
+    id,
+    !!dv, 
+    !!!demo_controls,
+    starts_with('distrail_walk')
+  ) %>%
+  select(-distrail_walk_raw) %>%
+  select(-age_OE___NotMissing)
+
+### Dumify
+df.model.distrail_walk.dummies <- dummy_cols(df.model.distrail_walk, remove_selected_columns = TRUE, remove_most_frequent_dummy = TRUE)
+
+### Set Vars
+vars <- names(df.model.distrail_walk.dummies)[3:length(names(df.model.distrail_walk.dummies))]
+form <- as.formula(paste(dv, '~', paste0(vars, collapse = ' + ')))
+
+### Model
+model.distrail_walk <- AER::tobit(form, left=0, data=df.model.distrail_walk.dummies)
+
+summary(model.distrail_walk) # interesting distrail: quarter mile is positive and significant, 
+
+BE_tests.other <- list()
+
+BE_tests.other$distrail_walk <- 
+  model.distrail_walk %>%
+  tidy_tobit_model() %>%
+  filter(substr(v, 1, 8) == 'distrail')
+
+### quartermile
+
+# Distrail Car
+df.model.distrail_car <- 
+  df.clean %>%
+  filter(vmt < 300) %>%
+  filter(age_OE___NotMissing == 1) %>%
+  filter(homeown != 'Missing') %>%
+  select(
+    id,
+    !!dv, 
+    !!!demo_controls,
+    starts_with('distrail_car')
+  ) %>%
+  select(-distrail_car_raw) %>%
+  select(-age_OE___NotMissing)
+
+### Dumify
+df.model.distrail_car.dummies <- dummy_cols(df.model.distrail_car, remove_selected_columns = TRUE, remove_most_frequent_dummy = TRUE)
+
+### Set Vars
+vars <- names(df.model.distrail_car.dummies)[3:length(names(df.model.distrail_car.dummies))]
+form <- as.formula(paste(dv, '~', paste0(vars, collapse = ' + ')))
+
+### Model
+model.distrail_car <- AER::tobit(form, left=0, data=df.model.distrail_car.dummies)
+
+summary(model.distrail_car) # interesting: the exact same thing. I guess the car/walk networks aren't that different
+
+BE_tests.other$distrail_car <- 
+  model.distrail_car %>%
+  tidy_tobit_model() %>%
+  filter(substr(v, 1, 8) == 'distrail')
+
+# BE_cols.other
+df.model.NumBusStops <- 
+  df.clean %>%
+  filter(vmt < 300) %>%
+  filter(age_OE___NotMissing == 1) %>%
+  filter(homeown != 'Missing') %>%
+  select(
+    id,
+    !!dv, 
+    !!!demo_controls,
+    starts_with('NumBusStops')
+  ) %>%
+  select(-age_OE___NotMissing)
+
+### Dumify
+df.model.NumBusStops.dummies <- dummy_cols(df.model.NumBusStops, remove_selected_columns = TRUE, remove_most_frequent_dummy = TRUE)
+
+### Set Vars
+vars <- names(df.model.NumBusStops.dummies)[3:length(names(df.model.NumBusStops.dummies))]
+form <- as.formula(paste(dv, '~', paste0(vars, collapse = ' + ')))
+
+### Model
+model.NumBusStops <- AER::tobit(form, left=0, data=df.model.NumBusStops.dummies)
+
+summary(model.NumBusStops) # interesting: the exact same thing. I guess the car/walk networks aren't that different
+
+BE_tests.other$NumBusStops <- 
+  model.NumBusStops %>%
+  tidy_tobit_model() %>%
+  filter(substr(v, 1, 8) == 'NumBusSt')
+
+# Save them as above
+BE_tests.other.expanded <- BE_tests.other %>% 
+  bind_rows(.id = 'name') %>% 
+  extract(v, into=c('col', 'geo_level'), '(.*)_([^_]+$)') %>%
+  mutate(
+    significance_level = 1 - p.value,
+    pos_or_neg = if_else(estimate > 0, 'Positive', 'Negative'),
+    pos_or_neg = fct_rev(pos_or_neg)
+  ) %>% 
+  # Create an is_max column
+  group_by(col) %>%
+  mutate(is_max = p.value == min(p.value)) %>%
+  ungroup()
+```
+
+#### Put it all together
+```{r BE.cols to use}
+# Definite Includes:
+# JobsWithin45_Car, JobsWithin45_Transit, distrail_car_raw, distrail_walk_raw, BusStopDens_bg
+BE_cols.definite_includes <- c('JobsWithin45_Car', 'JobsWithin45_Transit', 'distrail_car_raw', 'distrail_walk_raw', 'BusStopDens_bg')
+
+BE_cols.to_use <- c(
+  BE_tests.expanded %>%
+    filter(is_max) %>%
+    mutate(colname = paste0(col, '_', geo_level)) %>%
+    pull(colname),
+  BE_tests.other.expanded %>%
+    filter(is_max) %>% 
+    mutate(colname = paste0(col, '_', geo_level)) %>%
+    pull(colname),
+  BE_cols.definite_includes
+)
+
+
+```
+
+## (9) Back to Modeling 
+
+Using pared down dataset
+### 9 - Model
+```{r model9}
+# Remove Wage vars
+BE_cols.to_use <- BE_cols.to_use[BE_cols.to_use %notin% c('HiWage_two','MedWage_two','LowWage_two')]
+
+df.modeling9 <- 
+  df.clean %>%
+  select(
+    id,
+    !!dv,
+    !!!demo_controls,
+    !!BE_cols.to_use
+  ) %>%
+  filter(
+    vmt < 300,
+    age_OE___NotMissing == 1,
+    homeown != 'Missing'
+  ) %>%
+  select(
+    -age_OE___NotMissing, 
+    -starts_with('HiWage'), 
+    -starts_with('MedWage'),
+    -starts_with('LowWage'),
+    -starts_with('PubDens'),
+    -contains('Intersection'),
+    -contains('StreetDens')
+  )
+
+# Dummify
+df.modeling9.dummies <- dummy_cols(df.modeling9, remove_selected_columns = TRUE, remove_most_frequent_dummy = TRUE)
+
+# Set Vars
+vars9 <- names(df.modeling9.dummies)[3:length(names(df.modeling9.dummies))]
+
+form9 <- as.formula(paste(dv, '~', paste0(vars9, collapse='+')))
+
+# Model
+model9 <- AER::tobit(form9, left=0, data=df.modeling9.dummies)
+
+summary(model9)
+which(is.na(coef(model9))) # <- test for 
+
+model9 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model9_raw.csv')
+```
+
+### 9 - Visualize
+```{r model9 viz}
+tidy_tobit_model(model9) %>%
+  filter(p.value < .05) %>%
+  print(n = 24)
+
+```
+
+### 9 - Analyze
+```{r model9 corr}
+vif.9 <- tibble(var = names(car::vif(model9)), vif=car::vif(model9))
+vif.9 %>% 
+  arrange(desc(vif))
+
+vif.9 %>%
+  ggplot(aes(x = vif, y=var)) +
+  geom_bar(stat='identity') +
+  labs(
+    title = 'Model 9 VIF',
+    x = NULL,
+    y = NULL
+  )
+
+df.modeling9.dummies %>%
+  select(any_of(BE_cols.to_use)) %>%
+  cor() %>%
+  ggcorrplot::ggcorrplot(
+    lab = TRUE,
+    show.diag = FALSE,
+    title = 'Model 9 - Corrplot (BE vars)'
+  )
+```
+
+### 9 - Notes
+- the distrail_raw variables are pretty similar
+- Load Densities are redundant
+- EmpDens is also kinda useless
+
+## (10) Model 10 - Remove redundant columnns
+* Remove `distrail_walk_raw` (I assume Car is more accurate)
+* Remove `NetLoadDens_OX24_two`
+* Remove `distrail_car_quarter` (who drives more than a mile)
+* Remove `EmpDens_two` (idk why this sucks)
+
+### 10 - Modeling
+```{r model10 modeling}
+remove_cols <- c('distrail_walk_raw', 'NetLoadDens_OX24_two', 'distrail_car_quarter', 'EmpDens_two')
+BE_cols.to_use.10 <- BE_cols.to_use[BE_cols.to_use %notin% remove_cols]
+
+# Narrow down data
+df.modeling10 <- 
+  df.clean %>%
+  select(
+    id,
+    !!dv,
+    !!!demo_controls,
+    !!BE_cols.to_use.10
+  ) %>%
+  filter(
+    vmt < 300,
+    age_OE___NotMissing == 1,
+    homeown != 'Missing'
+  ) %>%
+  select(
+    -age_OE___NotMissing, 
+    -starts_with('HiWage'), 
+    -starts_with('MedWage'),
+    -starts_with('LowWage'),
+    -starts_with('PubDens'),
+    -contains('Intersection'),
+    -contains('StreetDens')
+  )
+
+# Dummify
+df.modeling10.dummies <- dummy_cols(df.modeling10, remove_selected_columns = TRUE, remove_most_frequent_dummy = TRUE)
+
+# Set Vars
+vars10 <- names(df.modeling10.dummies)[3:length(names(df.modeling10.dummies))]
+
+form10 <- as.formula(paste(dv, '~', paste0(vars10, collapse='+')))
+
+# Model
+model10 <- AER::tobit(form10, left=0, data=df.modeling10.dummies)
+
+summary(model10)
+which(is.na(coef(model10))) # <- test for aliasing
+
+model10 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model10_raw.csv')
+```
+
+### 10 - Analyze
+```{r}
+model10 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+
+# VIF
+vif.10 <- tibble(var = names(car::vif(model10)), vif=car::vif(model10))
+
+vif.10 %>%
+  ggplot(aes(x = vif, y=var)) +
+  geom_bar(stat='identity') +
+  labs(
+    title = 'Model 10 VIF',
+    x = NULL,
+    y = NULL
+  )
+
+df.modeling10.dummies %>%
+  select(any_of(BE_cols.to_use)) %>%
+  cor() %>%
+  ggcorrplot::ggcorrplot(
+    lab = TRUE,
+    show.diag = FALSE,
+    title = 'Model 10 - Corrplot (BE vars)'
+  )
+```
+
+### 10 - Evaluate
+```{r model10-evaluation}
+df.modeling10.dummies
+```
+
+### 10 - Visualize
+```{r model10-viz}
+ALPHA <- .05
+
+#model10.outputs <- 
+model10 %>%
+  tidy_tobit_model() %>%
+  #mutate(is_significant = (p.value < ALPHA)) %>%
+  extract(v, into = c('group', 'var'),'(.*)___(.*+$)', remove = FALSE) %>%
+  mutate(var = if_else(is.na(var), v, var)) %>%
+  select(v, group, var) %>%
+  print(n = 50)
+
+model10 %>%
+  tidy_tobit_model() %>% 
+  mutate(is_significant = (p.value < ALPHA)) %>%
+  #separate(v, into= c('group', 'subgroup'), sep = '___') %>% print(n = 50)
+  ggplot(aes(y = fct_rev(as_factor(v)), x = estimate, fill = 1-p.value, group = as_factor(v), color = is_significant)) + 
+  geom_bar(stat = 'identity') + 
+  scale_fill_gradient2(low = 'white', midpoint = .8, high = 'darkred') + 
+  scale_color_manual(values = c('TRUE' = 'blue', 'FALSE' = '#efefef')) + 
+  labs(
+    x = 'Coefficient Estimate',
+    y = 'Variable',
+    fill = 'Significance Level',
+    title = 'Model 10 Regression Coefficients',
+    color = paste0('Signif at ', ALPHA, ' level')
+  )
+  
+```
+
+
+# Redoing Feature Selection
+Need to redo the above with all missing variables
+
+This is gonna take a while
+
+## (11) Model 11 - Keep 
+
+
+### 11 - Visualize
+```{r model.11 visualize}
+names(df.modeling10.dummies) %>% paste0(collapse = "',\n'") %>% cat()
+# groups <- c(
+#   'Age Bucket: 15 and up' = 'age_OE___15_and_up',
+#   'Age Bucket: 25 and up' = 'age_OE___25_and_up',
+#   'Age Bucket: 35 and up' = 'age_OE___35_and_up',
+#   'Age Bucket: 45 and up' = 'age_OE___45_and_up',
+#   'Age Bucket: 55 and up' = 'age_OE___55_and_up',
+#   'Age Bucket: 65 and up' = 'age_OE___65_and_up',
+#   'Age Bucket: 75 and up' = 'age_OE___75_and_up',
+#   'HH Income: NotMissing' = 'hhincome_OE___NotMissing',
+#   'HH Income: $10k & up'  = 'hhincome_OE____10k_and_up',
+#   'HH Income: $15k & up'  = 'hhincome_OE____15k_and_up',
+#   'HH Income: $25k & up'  = 'hhincome_OE____25k_and_up',
+#   'HH Income: $35k & up'  = 'hhincome_OE____35k_and_up',
+#   'HH Income: $50k & up'  = 'hhincome_OE____50k_and_up',
+#   'HH Income: $75k & up'  = 'hhincome_OE____75k_and_up',
+#   'HH Income: $100k & up' = 'hhincome_OE___100k_and_up',
+#   'HH Income: $125k & up' = 'hhincome_OE___125k_and_up',
+#   'HH Income: $150k & up' = 'hhincome_OE___150k_and_up',
+#   'HH Income: $200k & up' = 'hhincome_OE___200k_and_up',
+#   'Educ: NotMissing'      = 'education_OE___NotMissing',
+#   'Educ: HighSchool & up' = 'education_OE___HighSchool_and_up',
+#   'Educ: SomeCollege & up' = 'education_OE___SomeCollege_and_up',
+#   'Educ: Bachelors & up'  = 'education_OE___Bachelors_and_up',
+#   'Educ: Graduate & up'   = 'education_OE___Graduate_and_up',
+#   'HH Size'               = 'hhsize',
+#   'Young Children'        = 'youngchildren',
+#   'Pop Density (2mi)'     = 'PopDens_two',
+#   'Ret Density (2mi)'     = 'RetDens_two',
+#   'Ent Density (2mi)'     = 'EntDens_two',
+#   'Ind Density (2mi)'     = 'IndDens_two',
+#   'Off Density (2mi)'     = 'OffDens_two',
+#   'Svc Density (2mi)'     = 'SvcDens_two',
+#   'Hlth Density (2mi)'    = 'HlthDens_two',
+#   'Edu Density (2mi)'     = 'EduDens_two',
+#   'Ntwrk Load Density (2mi)' = 'NetLoadDens_GF18_two',
+#   'Walk Dist to Rail (.25mi)' = 'distrail_walk_quarter',
+#   '# Bus Stops (1mi)'     = 'NumBusStops_one',
+#   Jobs                          'JobsWithin45_Car',
+#                             'JobsWithin45_Transit',
+#                             'distrail_car_raw',
+#                             'BusStopDens_bg',
+#                             'sex_Male',
+#                             'race_AAPI',
+#                             'race_AfAm',
+#                             'race_Other_Multiple_Missing',
+#                             'homeown_Other',
+#                             'homeown_Rent'
+# )
+# 
+# list(
+#   age_OE___15_and_up = list(display_name = '', group = '', unit = '',)
+#   age_OE___25_and_up
+#   age_OE___35_and_up
+#   age_OE___45_and_up
+#   age_OE___55_and_up
+#   age_OE___65_and_up
+#   age_OE___75_and_up
+# )
+
+```
+
+### 11 - Rerun Models with diminished dataset
+```{r model11 choose-columns}
+
+demo_controls.11 <- demo_controls
+
+df.modeling11 <- 
+  df.clean %>% 
+  filter(
+    vmt < 300,
+    age_OE___NotMissing == 1,
+    homeown != 'Missing'
+  ) %>%
+  mutate(JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car) %>%
+  select(
+    id,
+    !!dv,
+    PopDens_two,
+    RetDens_bg,
+    distrail_walk_quarter,
+    NumBusStops_one,
+    NetLoadDens_OX24_two,
+    Missing_IntersectionDens_OX24_two,
+    Missing_StreetDens_OX24_two,
+    !!!demo_controls
+  ) %>%
+  select(-age_OE___NotMissing)
+  
+# dummify
+df.modeling11.dummies <- dummy_cols(df.modeling11, remove_selected_columns = TRUE, remove_most_frequent_dummy = TRUE)
+
+# formula
+# Set Vars
+vars11 <- names(df.modeling11.dummies)[3:length(names(df.modeling11.dummies))]
+
+form11 <- as.formula(paste(dv, '~', paste0(vars11, collapse='+')))
+
+# Model
+model11 <- AER::tobit(form11, left=0, data=df.modeling11.dummies)
+
+summary(model11)
+which(is.na(coef(model11))) # <- test for aliasing
+
+model11 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model11_raw.csv')
+```
+
+#### Re-title
+```{r titling functions}
+
+new_names <- 
+  names(coef(model11)) %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('education_OE___', 'Educ: ') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace_all('_', ' ') %>%
+  str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('homeown', 'Homeown:') %>%
+  str_replace('sex', 'Sex:') %>%
+  str_replace('youngchildren', '# Young Children') %>%
+  str_replace('distrail walk', 'Dist-to-rail Walk')
+  
+new_names <- set_names(names(coef(model11)), new_names)  
+
+```
+
+
+### 11 - Analyze
+```{r model11 - }
+model11 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+
+# VIF
+vif.11 <- tibble(var = names(car::vif(model11)), vif=car::vif(model11))
+
+# Add Display titles
+vif.11$title <- set_names(names(new_names), new_names)[vif.11$var]
+
+# Rearrange
+vif.11 <- 
+  vif.11 %>%
+  select(var, title, vif)
+
+# add in significance levels
+vif.11 <- 
+  vif.11 %>%
+  inner_join(
+    tidy_tobit_model(model11) %>%
+      select(v, estimate, p.value),
+    by = c('var'='v')
+  )
+
+vif.11 %>%
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = c(0, .001,.01,.05, .1, 1),
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = c(4, 3, 2, 1, 0),
+       cutpoints = c(0, .001, .01,.05, .1, 1), 
+       corr      = FALSE
+      )
+  ) %>%
+  ggplot(aes(x = vif, 
+             y=fct_rev(as_factor(title)), 
+             label = signif_stars,
+             fill = signif_level
+             # label = scales::number(p.value, accuracy = .0001)
+             )) + 
+             #label = paste0(p.value, ': ', signif))) +
+  geom_bar(stat='identity', color = 'grey64') +
+  #geom_text(nudge_x = .65, nudge_y = 0) + #-.25) + 
+  geom_text(size = 6, nudge_x = .55, nudge_y = -.25) + 
+  scale_fill_manual(values = colorRampPalette(c('#efefef', 'dodgerblue3'))(5)) + 
+  guides(fill = guide_legend(reverse=T)) + 
+  labs(
+    title = 'Model 11 VIF',
+    x = NULL,
+    y = NULL,
+    fill = 'Signif.\n Level'
+  )
+
+df.modeling11.dummies %>%
+  select(any_of(c(BE_cols.std_expanded, BE_cols.other))) %>%
+  rename(new_names[new_names %in% c(BE_cols.std_expanded, BE_cols.other)]) %>%
+  cor() %>%
+  ggcorrplot::ggcorrplot(
+    lab = TRUE,
+    show.diag = FALSE,
+    title = 'Model 11 - Corrplot (BE vars)'
+  )
+
+```
+
+### 11 - More Visualize
+```{r coef-plot}
+model11.pltdf <- model11 %>%
+  tidy_tobit_model() %>% 
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = c(0, .001,.01,.05, .1, 1),
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = c(4, 3, 2, 1, 0),
+       cutpoints = c(0, .001, .01,.05, .1, 1), 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names), new_names)[v]), v, set_names(names(new_names), new_names)[v]),
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]),
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Educ','Race','Sex')        ~ grp,
+                    grp %in% c('Homeown','# Young Children','HH-Size') ~ 'Home',
+                    grp %in% c('(Intercept)', 'Log(scale)')            ~ 'Mod',
+                    .default = 'Built-Env.'),
+    grp = factor(grp, levels = c('Built-Env.','Mod','Race','Sex', 'Age','HH-Income','Educ','Home'))
+  ) %>%
+  select(grp, everything())
+
+model11.pltdf %>%
+  mutate(
+    hide = (grp %in% 'Built-Env.')
+  ) %>%
+  arrange(grp) %>%
+  #filter(hide) %>%
+  ggplot(aes(
+    y = fct_rev(as_factor(Term)), x = estimate, 
+    fill = signif_level, group = fct_rev(grp),
+    label = signif_stars
+  )) + 
+  geom_bar(stat = 'identity', color = 'grey64') + 
+  #scale_fill_gradient2(low = 'white', midpoint = .8, high = 'darkred') + 
+  scale_fill_manual(values = colorRampPalette(c('#efefef', 'dodgerblue3'))(5)) + 
+  labs(
+    x = 'Coefficient Estimate',
+    y = 'Variable',
+    fill = 'Signif.\n Level',
+    title = 'Model 11: Regression Coefficients (Built-Env.)',
+    color = paste0('Signif at ', ALPHA, ' level')
+  ) + 
+  guides(fill = guide_legend(reverse=T)) + 
+  facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+  theme(strip.placement = 'outside',
+        panel.spacing = unit(0, 'in'), 
+        #panel.background = element_rect(color='gray33', linetype = 2),
+        panel.border = element_rect(color='gray33', fill=NA, linetype=1),
+        strip.background.y = element_rect(fill='white', color='gray64'),
+        #panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+```
+
+## (12) Model 12
+### 12 - Model
+Include Street/Intersection Density
+```{r model11 choose-columns}
+demo_controls.12 <- demo_controls
+df.modeling12 <- 
+  df.clean %>% 
+  filter(
+    vmt < 300,
+    age_OE___NotMissing == 1,
+    homeown != 'Missing'
+  ) %>%
+  mutate(JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car) %>%
+  select(
+    id,
+    !!dv,
+    PopDens_two,
+    RetDens_bg,
+    distrail_walk_quarter,
+    NumBusStops_one,
+    NetLoadDens_OX24_two,
+    IntersectionDens_OX24_two,
+    Missing_IntersectionDens_OX24_two,
+    StreetDens_OX24_two,
+    Missing_StreetDens_OX24_two,
+    !!!demo_controls
+  ) %>%
+  select(-age_OE___NotMissing)
+  
+# dummify
+df.modeling12.dummies <- dummy_cols(df.modeling12, remove_selected_columns = TRUE, remove_most_frequent_dummy = TRUE)
+
+# formula
+# Set Vars
+vars12 <- names(df.modeling12.dummies)[3:length(names(df.modeling12.dummies))]
+
+form12 <- as.formula(paste(dv, '~', paste0(vars12, collapse='+')))
+
+# Model
+model12 <- AER::tobit(form12, left=0, data=df.modeling12.dummies)
+
+summary(model11)
+which(is.na(coef(model11))) # <- test for aliasing
+
+model12 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model12_raw.csv')
+```
+
+### 12 - Analyze
+```{r model12 - analyze}
+new_names <- 
+  names(coef(model12)) %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('education_OE___', 'Educ: ') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace_all('_', ' ') %>%
+  str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('homeown', 'Homeown:') %>%
+  str_replace('sex', 'Sex:') %>%
+  str_replace('youngchildren', '# Young Children') %>%
+  str_replace('distrail walk', 'Dist-to-rail Walk')
+new_names <- set_names(names(coef(model12)), new_names)  
+
+model12 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+
+# VIF
+vif.12 <- tibble(var = names(car::vif(model12)), vif=car::vif(model12))
+
+# Add Display titles
+vif.12$title <- set_names(names(new_names), new_names)[vif.12$var]
+
+# Rearrange
+vif.12 <- 
+  vif.12 %>%
+  select(var, title, vif)
+
+# add in significance levels
+vif.12 <- 
+  vif.12 %>%
+  inner_join(
+    tidy_tobit_model(model12) %>%
+      select(v, estimate, p.value),
+    by = c('var'='v')
+  )
+
+vif.12 %>%
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = c(0, .001,.01,.05, .1, 1),
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = c(4, 3, 2, 1, 0),
+       cutpoints = c(0, .001, .01,.05, .1, 1), 
+       corr      = FALSE
+      )
+  ) %>%
+  ggplot(aes(x = vif, 
+             y=fct_rev(as_factor(title)), 
+             label = signif_stars,
+             fill = signif_level
+             # label = scales::number(p.value, accuracy = .0001)
+             )) + 
+             #label = paste0(p.value, ': ', signif))) +
+  geom_bar(stat='identity', color = 'grey64') +
+  #geom_text(nudge_x = .65, nudge_y = 0) + #-.25) + 
+  geom_text(size = 6, nudge_x = .55, nudge_y = -.25) + 
+  scale_fill_manual(values = colorRampPalette(c('#efefef', 'dodgerblue3'))(5)) + 
+  guides(fill = guide_legend(reverse=T)) + 
+  labs(
+    title = 'Model 12: VIF',
+    x = NULL,
+    y = NULL,
+    fill = 'Signif.\n Level'
+  )
+
+
+
+df.modeling12.dummies %>%
+  select(any_of(c(BE_cols.std_expanded, BE_cols.other))) %>%
+  rename(new_names[new_names %in% c(BE_cols.std_expanded, BE_cols.other)]) %>%
+  cor() %>%
+  ggcorrplot::ggcorrplot(
+    lab = TRUE,
+    show.diag = FALSE,
+    title = 'Model 12: Corrplot (BE vars)'
+  )
+
+```
+
+### 12 - More Visualize
+```{r coef-plot}
+model12.pltdf <- model12 %>%
+  tidy_tobit_model() %>% 
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = c(0, .001,.01,.05, .1, 1),
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = c(4, 3, 2, 1, 0),
+       cutpoints = c(0, .001, .01,.05, .1, 1), 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names), new_names)[v]), v, set_names(names(new_names), new_names)[v]),
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]),
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Educ','Race','Sex')        ~ grp,
+                    grp %in% c('Homeown','# Young Children','HH-Size') ~ 'Home',
+                    grp %in% c('(Intercept)', 'Log(scale)')            ~ 'Mod',
+                    .default = 'Built-Env.'),
+    grp = factor(grp, levels = c('Built-Env.','Mod','Race','Sex', 'Age','HH-Income','Educ','Home'))
+  ) %>%
+  select(grp, everything())
+
+model12.pltdf %>%
+  mutate(
+    hide = (grp %in% 'Built-Env.')
+  ) %>%
+  arrange(grp) %>%
+  #filter(hide) %>%
+  #filter(!str_detect(Term, '^Missing')) %>%
+  filter(signif_level > 0) %>%
+  ggplot(aes(
+    y = fct_rev(as_factor(Term)), x = estimate, 
+    fill = signif_level, group = fct_rev(grp),
+    label = signif_stars
+  )) + 
+  geom_bar(stat = 'identity', color = 'grey64') + 
+  #scale_fill_gradient2(low = 'white', midpoint = .8, high = 'darkred') + 
+  scale_fill_manual(values = set_names(colorRampPalette(c('#efefef', 'dodgerblue3'))(5), c(0:4))) + 
+  labs(
+    x = 'Coefficient Estimate',
+    y = 'Variable',
+    fill = 'Signif.\n Level',
+    title = 'Model 12: Regression Coefficients (p<.10)',
+    color = paste0('Signif at ', ALPHA, ' level')
+  ) + 
+  guides(fill = guide_legend(reverse=T)) + 
+  facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+  theme(strip.placement = 'outside',
+        panel.spacing = unit(0, 'in'), 
+        #panel.background = element_rect(color='gray33', linetype = 2),
+        panel.border = element_rect(color='gray33', fill=NA, linetype=1),
+        #strip.background.y = element_rect(fill='white', color='gray64'),
+        #panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+```
+
+
+### 12 - More Visualize
+```{r model12-residuals}
+
+
+pred_vmt.12 <- predict(model12, df.modeling12.dummies)
+
+df.modeling12.dummies$vmt_pred <- pred_vmt.12
+
+# Model 12 Plot
+df.modeling12.dummies %>%
+  ggplot(aes(x = vmt, y = pmax(vmt_pred, 0))) + 
+  geom_point(alpha=.1, color='dodgerblue4') + 
+  labs(
+    y = 'Predicted VMT',
+    x = 'Daily VMT'
+  )
+
+# Residual Plots
+df.modeling12.dummies %>%
+  mutate(resid = abs(pmax(vmt_pred, 0) - vmt)) %>%
+  ggplot(aes(x = vmt, y = resid)) +
+  geom_point() +
+  labs(
+    title = 'Model 12 Residual Plot'
+  )
+  
+
+
+# df.modfeling11.dummies$vmt_pred <- predict(model11, df.modeling11.dummies)
+# 
+# df.modeling11.dummies %>%
+#   ggplot(aes(x = vmt, y = vmt_pred)) + 
+#   geom_point()
+```
+
+
+## (14) Model 14
+### 14 - Model
+Include Street/Intersection Density
+```{r model14 choose-columns}
+## Notes
+# - PopDens at 2mi is too big
+# - Don't need PopDens, 
+
+
+demo_controls.14 <- demo_controls
+df.modeling14 <- 
+  df.clean %>% 
+  filter(
+    vmt < 300,
+    age_OE___NotMissing == 1,
+    age_OE___15_and_up == 1,
+    homeown != 'Missing',
+  ) %>%
+  mutate(JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car) %>%
+  select(
+    id,
+    !!dv,
+    PopDens_half,
+    RetDens_bg,
+    distrail_walk_quarter,
+    NumBusStops_one,
+    NetLoadDens_OX24_two,
+    #IntersectionDens_OX24_two,
+    #Missing_IntersectionDens_OX24_two,
+    #StreetDens_OX24_two,
+    Missing_StreetDens_OX24_two,
+    JobsWi45_transit_to_car_ratio,
+    !!!demo_controls
+  ) %>%
+  select(-age_OE___NotMissing)
+  
+# dummify
+df.modeling14.dummies <- dummy_cols(df.modeling14, remove_selected_columns = TRUE)
+
+# formula
+# Set Vars
+vars14 <- names(df.modeling14.dummies)[3:length(names(df.modeling14.dummies))]
+vars_to_remove_14 <- c('age_OE___15_and_up', 'sex_Not_Male', 'race_White', 'homeown_Own')
+vars14 <- vars14[vars14 %notin% vars_to_remove_14]
+form14 <- as.formula(paste(dv, '~', paste0(vars14, collapse='+')))
+
+# Model
+model14 <- AER::tobit(form14, left=0, data=df.modeling14.dummies)
+
+summary(model14)
+which(is.na(coef(model14))) # <- test for aliasing
+
+model14 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model14_raw.csv')
+```
+
+### 14 - Analyze
+```{r model14 - analyze}
+new_names <- 
+  names(coef(model14)) %>%
+  str_replace('JobsWi45_transit_to_car_ratio', 'Jobs W/I 45min (Trans/Car)') %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('education_OE___', 'Educ: ') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace_all('_', ' ') %>%
+  str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('homeown', 'Homeown:') %>%
+  str_replace('sex', 'Sex:') %>%
+  str_replace('youngchildren', '# Young Children') %>%
+  str_replace('distrail walk', 'Dist-to-rail Walk') 
+new_names <- set_names(names(coef(model14)), new_names)  
+
+df.modeling14 %>% 
+  filter(hhincome_OE___NotMissing == 0)
+  
+
+model14 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+
+# VIF
+vif.14 <- tibble(var = names(car::vif(model14)), vif=car::vif(model14))
+
+# Add Display titles
+vif.14$title <- set_names(names(new_names), new_names)[vif.14$var]
+
+# Rearrange
+vif.14 <- 
+  vif.14 %>%
+  select(var, title, vif)
+
+# Add in significance levels
+vif.14 <- 
+  vif.14 %>%
+  inner_join(
+    tidy_tobit_model(model14) %>%
+      select(v, estimate, p.value),
+    by = c('var'='v')
+  )
+
+p_cutpoints <- c(0, .001,.01,.05, .1, 1)
+paste0('<' , tail(p_cutpoints, -1))
+
+vif.14 %>%
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = c(4, 3, 2, 1, 0),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+      )
+  ) %>%
+  ggplot(aes(x = vif, 
+             y=fct_rev(as_factor(title)), 
+             label = signif_stars,
+             fill = signif_level
+             # label = scales::number(p.value, accuracy = .0001)
+             )) + 
+             #label = paste0(p.value, ': ', signif))) +
+  geom_bar(stat='identity', color = 'grey64') +
+  #geom_text(nudge_x = .65, nudge_y = 0) + #-.25) + 
+  geom_text(size = 6, nudge_x = .20, nudge_y = -.3) + 
+  scale_fill_manual(values = colorRampPalette(c('#efefef', 'dodgerblue3'))(5)) + 
+  guides(fill = guide_legend(reverse=T)) + 
+  labs(
+    title = 'Model 14: VIF',
+    x = NULL,
+    y = NULL,
+    fill = 'Signif.\n Level'
+  )
+
+
+
+df.modeling14.dummies %>%
+  select(any_of(c(BE_cols.std_expanded, BE_cols.other, 'JobsWi45_transit_to_car_ratio'))) %>%
+  rename(new_names[new_names %in% c(BE_cols.std_expanded, BE_cols.other, 'JobsWi45_transit_to_car_ratio')]) %>%
+  cor() %>%
+  ggcorrplot::ggcorrplot(
+    lab = TRUE,
+    show.diag = FALSE,
+    title = 'Model 14: Corrplot (BE vars)'
+  )
+
+```
+
+### 14 - More Visualize
+```{r model13-coef-plot}
+
+model14.pltdf <- 
+  model14 %>%
+  tidy_tobit_model() %>% 
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names), new_names)[v]), v, set_names(names(new_names), new_names)[v]),
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]),
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Educ','Race','Sex')        ~ grp,
+                    grp %in% c('Homeown','# Young Children','HH-Size') ~ 'Home',
+                    grp %in% c('(Intercept)', 'Log(scale)')            ~ 'Mod',
+                    .default = 'Built-Env.'),
+    grp = factor(grp, levels = c('Built-Env.','Mod','Race','Sex', 'Age','HH-Income','Educ','Home'))
+  ) %>%
+  select(grp, everything())
+
+model14.pltdf %>%
+  mutate(
+    hide = (grp %in% 'Built-Env.')
+  ) %>%
+  arrange(grp) %>%
+  filter(hide) %>%
+  #filter(!str_detect(Term, '^Missing')) %>%
+  #filter(signif_level > 0) %>%
+  ggplot(aes(
+    y = fct_rev(as_factor(Term)), x = estimate, 
+    fill = fct_rev(signif_level), group = fct_rev(grp),
+    label = signif_stars
+  )) + 
+  geom_bar(stat = 'identity', color = 'grey64') + 
+  #scale_fill_gradient2(low = 'white', midpoint = .8, high = 'darkred') + 
+  scale_fill_manual(values = set_names(colorRampPalette(c('#efefef', 'dodgerblue3'))(5), rev(paste0('<' , tail(p_cutpoints, -1))))) + 
+  labs(
+    x = 'Coefficient Estimate',
+    y = 'Variable',
+    fill = 'Signif.\n Level',
+    #title = 'Model 14: Regression Coefficients (all)'
+    title = 'Model 14: Regression Coefficients (BE-vars)',
+  ) + 
+  guides(fill = guide_legend(reverse=T)) + 
+  facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+  theme(strip.placement = 'outside',
+        panel.spacing = unit(0, 'in'), 
+        #panel.background = element_rect(color='gray33', linetype = 2),
+        panel.border = element_rect(color='gray33', fill=NA, linetype=1),
+        #strip.background.y = element_rect(fill='white', color='gray64'),
+        #panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+```
+
+
+### 14 - More Visualize
+```{r model13-residuals}
+pred_vmt.14 <- predict(model14, df.modeling14.dummies)
+
+df.modeling14.dummies$vmt_pred <- pred_vmt.14
+
+# Model 14 Plot
+df.modeling14.dummies %>%
+  ggplot(aes(x = vmt, y = pmax(vmt_pred, 0))) + 
+  geom_point(alpha=.1, color='dodgerblue4') + 
+  labs(
+    y = 'Predicted VMT',
+    x = 'Daily VMT',
+    title = 'Model 14: Pred vs Real'
+  )
+
+# Residual Plots
+df.modeling14.dummies %>%
+  mutate(resid = abs(pmax(vmt_pred, 0) - vmt)) %>%
+  ggplot(aes(x = vmt, y = resid)) +
+  geom_point(alpha=.1) +
+  labs(
+    title = 'Model 14 Residual Plot'
+  )
+  
+
+
+# df.modfeling11.dummies$vmt_pred <- predict(model11, df.modeling11.dummies)
+# 
+# df.modeling11.dummies %>%
+#   ggplot(aes(x = vmt, y = vmt_pred)) + 
+#   geom_point()
+
+#modelr::rmse(df.modeling13.dummies$vmt_pred, df.modeling13.dummies$vmt)
+
+# RMSE 13: 28.669
+sqrt(mean((pmax(df.modeling13.dummies$vmt_pred,0) - df.modeling13.dummies$vmt)^2))
+
+# RMSE 12: 28.666
+sqrt(mean((pmax(df.modeling12.dummies$vmt_pred,0) - df.modeling12.dummies$vmt)^2))
+```
+
+
+## (15) Model 15
+### 15 - Model
+Include Street/Intersection Density
+---> re-run with Z-score
+- pop dens (switch to 1000s), retail dens, dist to rail_walk (rail w/i .25mi) [add multiple], num bus stops, jobs w/in 45 minutes by car:
+  - could run all the distance band rail-
+- baseline categories: HH-income: 10k
+  - Add Missing Education/Missing Income as their own categories
+- have hispanic
+- cbsa major metros (5 major metros/other)
+- Homeown: Own is baseline
+- add youngchildren_Y/N
+
+
+write up a narrative of my process and changes in each step between each model:
+- Document changes in the model 
+
+- look at scatter
+For next meeting: understanding land-use variables:
+- Interactions, non-linearity, thresholds
+
+
+## (16) Model 16
+
+### 16 - Model
+#### 16 - Model Data Prep
+```{r model16 modeling setup}
+demo_controls.16 <- c(demo_controls, 'cbsa')
+
+demo_controls
+#demo_controls.16[[8]] <- 'youngchildren'
+
+MAJOR_CBSAS <- c(40900, 31080, 41740, 41860, 40140, 41940)
+
+df.modeling16 <- 
+  df.clean %>% 
+  filter(
+    vmt < 300,
+    age_OE___NotMissing == 1,
+    homeown != 'Missing'
+  ) %>%
+  mutate(
+    JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car,
+    has_youngchildren = if_else(youngchildren > 0, 1, 0),
+    PopDens_two = PopDens_two/1000,
+    cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, cbsa_code, 'Other'),
+    major_cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, 'major', 'minor')
+  ) %>%
+  select(
+    id,
+    !!dv,
+    PopDens_two,
+    RetDens_bg,
+    distrail_walk_quarter,
+    NumBusStops_one,
+    NetLoadDens_OX24_two,
+    JobsWi45_transit_to_car_ratio,
+    #IntersectionDens_OX24_two,
+    #Missing_IntersectionDens_OX24_two,
+    StreetDens_OX24_two,
+    Missing_StreetDens_OX24_two,
+    !!!demo_controls.16
+  ) %>%
+  select(-age_OE___NotMissing) %>%
+  # Fix it so that Missing is a separate category for HH-Income, Education
+  mutate(
+    hhincome___Missing = abs(1 - hhincome_OE___NotMissing),
+    education___Missing = abs(1 - education_OE___NotMissing)
+  ) %>%
+  select(-hhincome_OE___NotMissing, -education_OE___NotMissing)
+
+# So we want to iinstead of including Missing as a first value, we want to set an additional flag for 'Missing' and then 
+
+# Save scaling values
+df.scalars.16 <- 
+  df.modeling16 %>% 
+  select(BE_vars_16) %>%
+  summarize(across(
+    everything(), 
+    .fns = c('mean' = mean, 'sd' = sd),
+    .names = '{.col}___{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '___', names_to = c('col', 'name')) %>%
+  pivot_wider()
+  
+# Now Scale the BE-cols
+BE_cols_to_scale.16 <- c('PopDens_two', 'RetDens_bg', 'NetLoadDens_OX24_two', 'StreetDens_OX24_two','JobsWi45_transit_to_car_ratio')
+
+df.modeling16 <- 
+  df.modeling16 %>%
+  mutate(across(
+    !!BE_cols_to_scale.16,
+    \(x) scale(x)[,1]
+  ))
+
+# dummify
+df.modeling16.dummies <- dummy_cols(df.modeling16, remove_selected_columns = TRUE, remove_most_frequent_dummy = FALSE)
+```
+
+#### 16 - Model Setup & Run
+```{r model16 model setup}
+names16 <- df.modeling16.dummies %>% names()
+
+# formula
+# Set Vars
+vars_to_remove_16 <- c('cbsa_Other', 'race_White', 'homeown_Own', 'sex_Not_Male')
+vars16 <- names16[3:length(names16)]
+vars16 <- vars16[vars16 %notin% vars_to_remove_16]
+
+form16 <- as.formula(paste(dv, '~', paste0(vars16, collapse='+')))
+
+# Model
+model16 <- AER::tobit(form16, left=0, data=df.modeling16.dummies)
+
+summary(model16)
+which(is.na(coef(model16))) # <- test for aliasing
+
+
+model16 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model16_raw.csv')
+```
+
+### 16 - Analyze/Visualize Prep
+
+#### 16 - Set Variable Titles 
+```{r model16 - analyze}
+new_names <- 
+  names(coef(model16)) %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('hhincome___', 'HH-Income: ') %>%
+  str_replace('education_OE___', 'Educ: ') %>%
+  str_replace('education___', 'Educ: ') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace_all('_', ' ') %>%
+  #str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('homeown', 'Homeown:') %>%
+  str_replace('AI_Other_Multiple', 'AI/Other/Multiple') %>%
+  str_replace('sex', 'Sex:') %>%
+  str_replace('JobsWi45_transit_to_car_ratio', 'Jobs w/i 45min (transit:car)') %>%
+  str_replace('youngchildren TRUE', 'Has Young Children') %>%
+  str_replace('youngchildren', '# Young Children') %>%
+  str_replace('distrail walk', 'Has Rail Access Walk') %>%
+  str_replace('cbsa 41860', 'CBSA: San Francisco/Oakland') %>% 
+  str_replace('cbsa 40900', 'CBSA: Sacramento') %>% 
+  str_replace('cbsa 31080', 'CBSA: Los Angeles/Orange Co.') %>% 
+  str_replace('cbsa 40140', 'CBSA: Riverside') %>% 
+  str_replace('cbsa 41940', 'CBSA: San Jose') %>% 
+  str_replace('cbsa 41740', 'CBSA: San Diego') %>%
+  I()
+new_names <- set_names(names(coef(model16)), new_names)  
+new_names
+
+model16 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+```
+
+#### 16 - Setup Plotting DF
+```{r model13-coef-plot}
+# Create Plotting DF
+model16.pltdf <- 
+  model16 %>%
+  tidy_tobit_model() %>% 
+  # Add Stars
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names), new_names)[v]), v, set_names(names(new_names), new_names)[v]),
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]), # <- first try just splitting on :
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Educ','Race','Sex','CBSA') ~ grp,
+                    grp %in% c('Homeown','# Young Children','HH-Size', 'Has Young Children') ~ 'Home',
+                    grp %in% c('(Intercept)', 'Log(scale)') ~ 'Mod',
+                    .default = 'Built-Env.'),
+    grp = factor(grp, levels = c('Built-Env.','Mod','Race','Sex', 'Age','HH-Income','Educ','Home', 'CBSA'))
+  ) %>%
+  select(grp, everything())
+
+# Add in means and sds
+var_summaries.16 <- 
+  # Calculate mean and sd from the scaled table
+  df.modeling16.dummies %>%
+  select(-id, -vmt) %>%
+  summarize(across(
+    where(is.numeric),
+    .fns = c('mean' = mean, 'sd' = sd),
+    .names = '{.col}_____{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '_____', names_to = c('col', 'name')) %>%
+  pivot_wider() %>%
+  # Now grabt he prescaled values from the scalar df
+  left_join(
+    df.scalars.16,
+    by = c('col'='col'),
+    suffix = c('', '.prescaled')
+  ) %>%
+  mutate(
+    # Here coalesce takes the prescaled value where it exists
+    mean = coalesce(mean.prescaled, mean),
+    sd = coalesce(sd.prescaled, sd)
+  ) %>%
+  select(-ends_with('.prescaled'))
+  
+# Now add the scaled data as additional columns
+model16.pltdf <-
+  model16.pltdf %>%
+  left_join(
+    var_summaries.16,
+    by = c('v' = 'col')
+  )
+
+# Sort the Built-Env groups by distance band
+model16.pltdf$dist_band <- str_replace(str_replace(str_extract(str_replace(model16.pltdf$Term, '\\(bg\\)', '(.001mi)'), '\\([^\\d]*(\\d+)[^\\d]*\\)'), 'mi\\)', ''), '\\(', '') %>% as.numeric()
+model16.pltdf <- 
+  model16.pltdf %>%
+  arrange(grp, desc(dist_band))
+
+# Join in VIF
+vif.16 <- tibble(var = names(car::vif(model16)), vif=car::vif(model16))
+
+model16.pltdf <-
+  model16.pltdf %>%
+  inner_join(
+    vif.16,
+    'by' = c('v' = 'var')
+  )
+
+model16.pltdf
+
+```
+
+### 16 - Visualize 
+#### (func-def) plot_vif 
+```{r function-plot vif}
+plot_vif <- function(pltdf, title=NA, remove_group_name = TRUE) {
+  df.plt <- pltdf
+  
+  if(remove_group_name) 
+    df.plt$Term <- strsplit(df.plt$Term, ':') %>% sapply(tail, 1)
+      
+  plt <- df.plt %>%
+    ggplot(aes(x     = vif, 
+               y     = fct_rev(as_factor(Term)), 
+               label = signif_stars,
+               fill  = factor(signif_level),
+               group = fct_rev(grp)
+               # label = scales::number(p.value, accuracy = .0001)
+             )) + 
+             #label = paste0(p.value, ': ', signif))) +
+  geom_bar(stat='identity', color = 'grey64') +
+  #geom_text(nudge_x = .65, nudge_y = 0) + #-.25) + 
+  geom_text(size = 6, nudge_x = .55, nudge_y = -.25) + 
+  scale_fill_manual(values = set_names(
+      c(colorRampPalette(c('#efefef', 'dodgerblue3'))(4), 'dodgerblue4'), 
+      rev(paste0('<' , tail(p_cutpoints, -1))))) + 
+  guides(fill = guide_legend(reverse=T)) + 
+  labs(
+    title = title,
+    x = 'Variance Inflation',
+    y = NULL,
+    fill = 'Signif.\n Level'
+  ) + 
+  facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+  theme(
+    strip.placement = 'outside',
+    strip.clip='off',
+    panel.spacing = unit(0, 'in'), 
+    panel.border = element_rect(color='gray33', fill=NA, linetype=1)#,
+    #panel.grid.major = element_blank()
+  )
+  
+  plt
+}
+
+# Run the actual plot
+plot_vif(model16.pltdf, title = 'Model 16: VIF')
+```
+
+#### (func-def) plot_corrpplot
+```{r model16-corrplot}
+# Corrplot
+BE_vars_16 <- names(df.modeling16.dummies)[3:10]
+BE_vars_16.names <- new_names[new_names %in% BE_vars_16]
+
+# Function
+plot_corrplot <- function(pltdf, vars_named, title='CorrPlot') {
+  pltdf %>%
+  select(!!!vars_named) %>%
+  cor() %>%
+  ggcorrplot::ggcorrplot(
+    lab = TRUE, lab_size = 3.5,
+    show.diag = FALSE,
+    title = title
+  )
+}
+
+plot_corrplot(df.modeling16.dummies, BE_vars_16.names, title='Model 16: Corrplot (BE-Vars)')
+```
+
+#### (func-def) plot_regression_coefs
+```{r model16 regression plots}
+# Make Regression Plot
+plot_regression_coefs <- function(plotdf, title = NULL, hide_nonprimary_grps = FALSE, primary_grps = c('Built-Env.'), remove_missing_flags=FALSE, display_summaries=FALSE, remove_group_name=TRUE, add_labels=FALSE, missing_red=TRUE, add_column_headers=TRUE,
+                                  add_demarcation_lines=TRUE, demarcation_offset=13) {
+  df.plt <- plotdf %>%
+    mutate(hide = (grp %in% primary_grps)) %>%
+    arrange(grp)
+  
+  # Hide groups (usually to display only the ones we care about.)
+  ## Modify 'hide' column to do this
+  if(hide_nonprimary_grps)
+    df.plt <- df.plt %>% 
+      filter(hide)
+  
+  # Remove the group name before the colon
+  if(remove_group_name) 
+    df.plt$Term <- strsplit(df.plt$Term, ':') %>% 
+      sapply(tail, 1) %>% 
+      str_trim() %>%
+      str_replace('Missing', '[Missing]')
+  
+  # Remove all Missing values
+  if(remove_missing_flags)
+    df.plt <- df.plt %>%
+      filter(Term != '[Missing]')
+  
+  if(display_summaries) {
+    df.plt$Term <- paste0(df.plt$Term, '\n(',
+          'µ: ', scales::number(df.plt$mean, accuracy=.01), 
+          '  σ: ', scales::number(df.plt$sd, accuracy=.01),
+          ')')
+  }
+  
+  # Create separate factor version of Terem and move 'Missing' to end
+  df.plt$Term_display <- df.plt$Term %>% 
+    as_factor() %>% 
+    fct_relevel('[Missing]', after = Inf) %>% 
+    fct_rev()
+  #df.plt$Term_display <- fct_recode(df.plt$Term_display, 'Missing', '[Missing]')
+  
+  # Color "Missing' as red --> This doesn't work
+  y_axis_colors <- 'black'
+  if(missing_red) {
+    y_axis_colors <- ifelse(str_detect(df.plt$Term_display, 'Missing$'), 'firebrick3', 'black')
+  }
+  
+  # Default Val
+  if('default_val' %notin% names(df.plt))
+    df.plt$default_val <- NA
+  
+  # Find max coef for even axes
+  max_coef <- max(abs(df.plt$estimate))
+  
+  # Function to format facets
+  n_grps <- length(unique(model19.pltdf.test$grp)) + if_else(add_column_headers, 1, 0)
+  facet_formatter <- function(x) {
+      if((add_column_headers) && (x %% n_grps == 1)) {
+        # this is for the colun headers
+        element_text(size = 14, face='bold')
+      } else if(x <= n_grps) {
+        # First Column (Group)
+        element_text(size=13) 
+      } else if(x <= 2*n_grps)  {
+        # Second Column (Base Value) 
+        element_text(size=10, color='firebrick2')
+      }
+  }
+  
+  # Add Column Headers
+  if(add_column_headers) {
+    table_header_row <- tibble(grp = 'Group', default_val = 'Base Value', Term = NA, estimate = 0, signif_stars = noquote(''), signif_level = noquote('<1)'))
+    df.plt <- bind_rows(table_header_row, df.plt) %>% mutate(grp = fct_inorder(grp))
+  }
+  
+  plt <- df.plt %>%
+    ggplot(aes(
+      y = Term_display, 
+      x = estimate, 
+      fill = factor(signif_level), group = fct_rev(grp),
+      label = signs::signs(estimate, add_plusses = TRUE, format = scales::number_format(accuracy=.001))
+    )) + 
+    geom_bar(stat = 'identity', color = 'grey64') + 
+    scale_fill_manual(values = set_names(
+      c(colorRampPalette(c('#efefef', 'dodgerblue3'))(4), 'dodgerblue4'), 
+      rev(paste0('<' , tail(p_cutpoints, -1)))))  + 
+    labs(
+      x = 'Coefficient Estimate\n(Δ vmt)',
+      y = NULL,
+      #y = 'Variable',
+      fill = 'Signif.\n Level',
+      title = title,
+      color = paste0('Signif at ', ALPHA, ' level')
+    ) + 
+    guides(fill = guide_legend(reverse=T)) + 
+    scale_x_continuous(breaks = scales::breaks_width(5), 
+                       minor_breaks = scales::breaks_width(1), 
+                       limits = c(-max_coef, max_coef),
+                       labels = signs::signs_format(add_plusses=TRUE)) + 
+    theme(
+      title = element_text(size = 15),
+      strip.placement = 'outside',
+      strip.clip='off',
+      strip.switch.pad.wrap = unit(1,'in'),
+      strip.text.y.left = element_text(angle=0, hjust=0),
+      strip.background.y = element_rect(color='grey33', linewidth=.33),
+      panel.spacing.y = unit(.05, 'in'), 
+      panel.border = element_rect(color='gray33', fill=NA, linetype=1,linewidth = unit(.5, 'in')),
+      #axis.text.y.left = element_text(color = c('Missing'='red', 'Other'='black'))
+  ) +
+    ggh4x::facet_grid2(
+    #facet_grid(
+      grp+default_val~., 
+      scales='free', space='free_y', switch='y', 
+      labeller = label_value, 
+      #axes = 'y', 
+      strip=ggh4x::strip_themed(
+        text_y = lapply(1:(n_grps * 2), facet_formatter)
+      )
+    )
+  
+  # Add labels
+  if(add_labels) {
+    plt <- plt + 
+      geom_label(fill = '#efefef')
+  }
+    
+  # Add demarcation lines
+  if(add_demarcation_lines) {
+    plt <- plt + 
+      coord_cartesian(clip = 'off') + 
+      annotation_custom(grob = grid::linesGrob(), xmin = -max_coef - demarcation_offset, xmax = -max_coef + 5, ymin = .4, ymax = .4) + 
+      annotation_custom(grob = grid::linesGrob(), xmin = -max_coef - demarcation_offset, xmax = max_coef, ymin = .055, ymax = .055)
+  }
+  #plt <- plt
+    
+  plt
+}
+```
+
+#### 16 - Plot Regression
+```{r make regrssion plots}
+# Full
+model16.pltdf %>%
+  plot_regression_coefs(title='Model 16: Regression Coefficients')
+
+# BE vars (with labels)
+model16.pltdf %>%
+  plot_regression_coefs(title='Model 16: Regression Coefficients (BE-Vars)', hide_nonprimary_grps=TRUE, display_summaries = TRUE)
+```
+
+#### 16 - Residuals, etc
+```{r model13-residuals}
+pred_vmt.16 <- predict(model16, df.modeling16.dummies)
+
+df.modeling16.dummies$vmt_pred <- pred_vmt.16
+
+# Model 13 Plot
+df.modeling16.dummies %>%
+  ggplot(aes(x = vmt, y = pmax(vmt_pred, 0))) + 
+  geom_point(alpha=.1, color='dodgerblue4') + 
+  labs(
+    y = 'Predicted VMT',
+    x = 'Daily VMT',
+    title = 'Model 16: Pred vs Real'
+  )
+
+# Residual Plots
+df.modeling16.dummies %>%
+  mutate(resid = abs(pmax(vmt_pred, 0) - vmt)) %>%
+  ggplot(aes(x = vmt, y = resid)) +
+  geom_point(alpha=.1) +
+  labs(
+    title = 'Model 16 Residual Plot'
+  )
+
+# R^2  
+cor(df.modeling16.dummies$vmt, pmax(df.modeling16.dummies$vmt_pred, 0))**2 # .066
+
+# RMSE
+
+# RMSE 13: 28.669
+sqrt(mean((pmax(df.modeling13.dummies$vmt_pred,0) - df.modeling13.dummies$vmt)^2))
+
+# RMSE 16: 28.65839
+sqrt(mean((pmax(df.modeling16.dummies$vmt_pred,0) - df.modeling16.dummies$vmt)^2))
+
+# RMSE 12: 28.666
+sqrt(mean((pmax(df.modeling12.dummies$vmt_pred,0) - df.modeling12.dummies$vmt)^2))
+```
+
+
+## (17) Model 17
+
+### 17 - Modeling
+
+#### 17 - Data Prep
+```{r model16 modeling setup}
+demo_controls.17 <- c(demo_controls, 'cbsa')
+
+MAJOR_CBSAS <- c(40900, 31080, 41740, 41860, 40140, 41940)
+
+BE_vars.17 <- c('PopDens_two', 'RetDens_bg', 'distrail_walk_quarter', 'distrail_walk_one', 'NumBusStops_one', 'NetLoadDens_OX24_two', 'JobsWi45_transit_to_car_ratio', 'StreetDens_OX24_two', 'Missing_StreetDens_OX24_two'
+                #'IntersectionDens_OX24_two', 'Missing_IntersectionDens_OX24_two',
+            )
+
+df.modeling17 <- 
+  df.clean %>% 
+  filter(
+    vmt < 300, # 109
+    age_OE___NotMissing == 1, #119
+    homeown != 'Missing' # 136
+  ) %>%
+  mutate(
+    # New Cols
+    JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car,
+    has_youngchildren = if_else(youngchildren > 0, 1, 0),
+    #PopDens_two = PopDens_two/1000,
+    cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, cbsa_code, 'Other'),
+    major_cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, 'major', 'minor')
+  ) %>%
+  select(
+    id,
+    !!dv,
+    !!!BE_vars.17,
+    !!!demo_controls.17
+  ) %>%
+  select(-age_OE___NotMissing) %>%
+  # Fix it so that Missing is a separate category for HH-Income, Education
+  mutate(
+    hhincome___Missing = abs(1 - hhincome_OE___NotMissing),
+    education___Missing = abs(1 - education_OE___NotMissing)
+  ) %>%
+  select(-hhincome_OE___NotMissing, -education_OE___NotMissing)
+
+# So we want to instead of including Missing as a first value, we want to set an additional flag for 'Missing' and then 
+
+# Save scaling values and summaries
+df.scalars.17 <- 
+  df.modeling17 %>% 
+  select(!!!BE_vars.17) %>%
+  summarize(across(
+    everything(), 
+    .fns = c('mean' = mean, 'sd' = sd, 'quartile1' = \(x) quantile(x, .25), 'median' = median, 'quartile3' = \(x) quantile(x, .75)),
+    .names = '{.col}___{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '___', names_to = c('col', 'name')) %>%
+  pivot_wider()
+
+```
+
+#### 17 - Add Interaction terms
+```{r 1model17 - add interaction terms}
+# Add Interaction terms
+get_summary_val <- function(var, metric, summary_tbl) {
+  summary_tbl[[which(summary_tbl$col == var), metric]]
+}
+
+col_name_to_add <- 'loadDens_X_RetDens_above_med'
+BE_vars.17 <- c(BE_vars.17, col_name_to_add)
+df.modeling17[[col_name_to_add]] <- if_else(
+    (df.modeling17$NetLoadDens_OX24_two > get_summary_val('NetLoadDens_OX24_two', 'median', df.scalars.17)) &
+      (df.modeling17$RetDens_bg > get_summary_val('RetDens_bg', 'median', df.scalars.17)),
+    1,0)
+```
+
+#### 17 - Scaling
+```{r model17 - scaling}
+# Now Scale the BE-cols
+BE_vars.17.to_scale <- c('PopDens_two', 'RetDens_bg', 'NetLoadDens_OX24_two', 'StreetDens_OX24_two','JobsWi45_transit_to_car_ratio', 'NumBusStops_one')
+
+stopifnot(all(BE_vars.17.to_scale %in% BE_vars.17))
+
+df.modeling17 <- 
+  df.modeling17 %>%
+  mutate(across(
+    !!BE_vars.17.to_scale,
+    \(x) scale(x)[,1]
+  ))
+```
+
+#### 17 - Model Setup & Run
+```{r model17 model setup}
+# dummify
+df.modeling17.dummies <- dummy_cols(df.modeling17, remove_selected_columns = TRUE, remove_most_frequent_dummy = FALSE)
+
+names17 <- df.modeling17.dummies %>% names()
+
+# formula
+# Set Vars
+vars_to_remove_17 <- c('cbsa_Other', 'race_White', 'homeown_Own', 'sex_Not_Male')
+vars17 <- names17[3:length(names17)]
+vars17 <- vars17[vars17 %notin% vars_to_remove_17]
+
+form17 <- as.formula(paste(dv, '~', paste0(vars17, collapse='+')))
+
+# Model
+model17 <- AER::tobit(form17, left=0, data=df.modeling17.dummies)
+
+summary(model17)
+which(is.na(coef(model17))) # <- test for aliasing
+
+
+model17 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model17_raw.csv')
+```
+
+
+### 17 - Analyze/Visualize Prep
+
+#### 17 - Set Variable Titles 
+```{r model17 - analyze}
+new_names <- 
+  names(coef(model17)) %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('hhincome___', 'HH-Income: ') %>%
+  str_replace('education_OE___', 'Educ: ') %>%
+  str_replace('education___', 'Educ: ') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('homeown', 'Homeown:') %>%
+  str_replace('AI_Other_Multiple', 'AI/Other/Multiple') %>%
+  str_replace('sex', 'Sex:') %>%
+  # Constructed Vars
+  str_replace('JobsWi45_transit_to_car_ratio', 'Jobs w/i 45min (transit to car)') %>%
+  str_replace('loadDens_X_RetDens_above_med', 'LoadDens X RetDens > med') %>%
+  str_replace_all('_', ' ') %>%
+  #str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  # Other
+  str_replace('youngchildren TRUE', 'Has Young Children') %>%
+  str_replace('youngchildren', '# Young Children') %>%
+  str_replace('distrail walk', 'Has Rail Access Walk') %>%
+  # CBSA
+  str_replace('cbsa 41860', 'CBSA: San Francisco/Oakland') %>% 
+  str_replace('cbsa 40900', 'CBSA: Sacramento') %>% 
+  str_replace('cbsa 31080', 'CBSA: Los Angeles/Orange Co.') %>% 
+  str_replace('cbsa 40140', 'CBSA: Riverside') %>% 
+  str_replace('cbsa 41940', 'CBSA: San Jose') %>% 
+  str_replace('cbsa 41740', 'CBSA: San Diego') %>%
+  I()
+new_names <- set_names(names(coef(model17)), new_names)  
+new_names
+
+model17 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+```
+
+#### 17 - Setup Plotting DF
+```{r model17-coef-plot}
+# Create Plotting DF
+model17.pltdf <- 
+  model17 %>%
+  tidy_tobit_model() %>% 
+  # Add Stars
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names), new_names)[v]), v, set_names(names(new_names), new_names)[v]),
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]), # <- first try just splitting on :
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Educ','Race','Sex','CBSA') ~ grp,
+                    grp %in% c('Homeown','# Young Children','HH-Size', 'Has Young Children') ~ 'Home',
+                    grp %in% c('(Intercept)', 'Log(scale)') ~ 'Mod',
+                    .default = 'Built-Env.'),
+    grp = factor(grp, levels = c('Built-Env.','Mod','Race','Sex', 'Age','HH-Income','Educ','Home', 'CBSA'))
+  ) %>%
+  select(grp, everything())
+
+# Add in means and sds
+var_summaries.17 <- 
+  # Calculate mean and sd from the scaled table
+  df.modeling17.dummies %>%
+  select(-id, -vmt) %>%
+  summarize(across(
+    where(is.numeric),
+    .fns = c('mean' = mean, 'sd' = sd),
+    .names = '{.col}_____{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '_____', names_to = c('col', 'name')) %>%
+  pivot_wider() %>%
+  # Now grabt he prescaled values from the scalar df
+  left_join(
+    df.scalars.17,
+    by = c('col'='col'),
+    suffix = c('', '.prescaled')
+  ) %>%
+  mutate(
+    # Here coalesce takes the prescaled value where it exists
+    mean = coalesce(mean.prescaled, mean),
+    sd = coalesce(sd.prescaled, sd)
+  ) %>%
+  select(-ends_with('.prescaled'))
+  
+# Now add the scaled data as additional columns
+model17.pltdf <-
+  model17.pltdf %>%
+  left_join(
+    var_summaries.17,
+    by = c('v' = 'col')
+  )
+
+# Sort the Built-Env groups by distance band
+BLOCK_GROUP_SENTINEL_VALUE <- '.001'
+model17.pltdf$dist_band<- model17.pltdf$Term %>%
+  str_replace('\\(bg\\)', paste0('(', BLOCK_GROUP_SENTINEL_VALUE, 'mi)')) %>%
+  str_extract( '\\([^\\d]*(\\d+)[^\\d]*\\)') %>%
+  str_replace('mi\\)','') %>%
+  str_replace('\\(', '') %>%
+  as.numeric()
+model17.pltdf <- 
+  model17.pltdf %>%
+  arrange(grp, desc(dist_band))
+
+# Join in VIF
+vif.17 <- tibble(var = names(car::vif(model17)), vif=car::vif(model17))
+
+model17.pltdf <-
+  model17.pltdf %>%
+  inner_join(
+    vif.17,
+    'by' = c('v' = 'var')
+  )
+
+#View(model17.pltdf)
+model17.pltdf
+```
+
+### 17 - Visualize
+```{r model17 all-std-viz}
+
+# VIF Plot
+plot_vif(model17.pltdf, title = 'Model 17: VIF')
+
+# Corrplot
+BE_vars.17.names <- set_names(
+  model17.pltdf[model17.pltdf$grp == 'Built-Env.', ]$v,
+  model17.pltdf[model17.pltdf$grp == 'Built-Env.', ]$Term 
+)
+plot_corrplot(df.modeling17.dummies, vars_named = BE_vars.17.names, title = 'Model 17: CorrPlot')
+
+# Coefs
+plot_regression_coefs(model17.pltdf, title = 'Model 17: Regression Coefficients (full model)') + 
+  coord_cartesian(clip = 'off') + 
+  annotation_custom(grob = grid::linesGrob(), xmin = -16, xmax = 0, ymin = .4, ymax = .4)
+
+# BE-Coefs
+model17.pltdf %>%
+  mutate(grp2 = case_when(is.na(dist_band) ~ 'Other',
+                          dist_band == as.numeric(BLOCK_GROUP_SENTINEL_VALUE) ~ 'Block Grp',
+                          .default = paste0(scales::number(dist_band),'mi')
+                )) %>%
+  filter(grp == 'Built-Env.') %>%
+  mutate(grp = factor(grp2, c('2.00mi', '1.00mi','0.75mi','0.5mi','0.375mi','0.25mi','Block Grp','Other'))) %>%
+plot_regression_coefs(hide_nonprimary_grps = FALSE, display_summaries = TRUE, title = 'Model 17: Regression Coefficients (Built-Env Vars)', add_labels=TRUE) + 
+  scale_x_continuous(breaks=scales::breaks_width(5), minor_breaks=scales::breaks_width(1), limits = c(-10, 10), labels = signs::signs_format(add_plusses=T))
+  #coord_cartesian(clip = 'off') + 
+  #annotation_custom(grob = grid::linesGrob(), xmin = -11.7, xmax = 0, ymin = .404, ymax = .404)
+```
+
+## (18) Model 18
+
+- include hispanic
+- remove filters beside vmt
+
+### Add Hispanic back in
+```{r load new dataset}
+data.v6 <- read_csv('data/DataforExport_V6.csv')
+data.v6 %>% names() %>%
+  sapply(function(x) x %in% names(data.bak)) %>%
+  summary()
+
+# Add rownumbers as id
+data.v6 <- data.v6 %>% 
+  mutate(id = row_number()) %>% 
+  select(id, everything())
+
+# Confirm they are the same
+data %>% inner_join(data.v6, by = 'id', suffix = c('.v5', '.v6')) %>% filter(abs(IntersectionDens_OX24_bg.v5 - IntersectionDens_OX24_bg.v6) < .0000001) %>% filter(abs(distrail_walk_raw - Walk_DistToRail) < .000001) %>% nrow() # 55,792
+
+data %>% nrow() # 55,792
+data.v6 %>% nrow() # 55,792
+
+data %>% 
+    inner_join(select(data.v6, c(id, hisp_updated)), by ='id')
+
+# Add hispanic to demo_controls
+demo_controls[['ethnicity']] <- 'ethnicity'
+
+df.clean <- 
+  df.clean %>%
+  inner_join(
+    data.v6 %>%
+      select(id, ethnicity = hisp_updated) %>% 
+      mutate(ethnicity = if_else(ethnicity == 'Missing Data', 'Missing', ethnicity)),
+    by = 'id'
+  )
+
+df.clean$ethnicity %>% table()
+
+# Re-organize columns
+df.clean <- df.clean %>% 
+  select(id, vmt, veh_trips, hhincome_cat, hhincome_est, age_bucket, age_est, education, race, race_consolidated, ethnicity, homeown, sex, sex_consolidated, hhsize, youngchildren, starts_with('hhincome_OE'), starts_with('age_OE'), starts_with('education_OE'), everything())
+
+```
+
+### 18 - Modeling
+#### 18 - Data Prep
+
+- include hispanic
+- add all missing values back
+- un-consolidaate 'Sex'
+```{r model18 modeling setup}
+demo_controls.18 <- c(demo_controls, 'cbsa')
+demo_controls.18$sex <- 'sex'
+
+MAJOR_CBSAS <- c(40900, 31080, 41740, 41860, 40140, 41940)
+
+BE_vars.18 <- c('PopDens_two', 'RetDens_bg', 'distrail_walk_quarter', 'distrail_walk_one', 'NumBusStops_one', 'NetLoadDens_OX24_two', 'JobsWi45_transit_to_car_ratio', 'StreetDens_OX24_two', 'Missing_StreetDens_OX24_two'
+                #'IntersectionDens_OX24_two', 'Missing_IntersectionDens_OX24_two',
+            )
+
+df.modeling18 <- 
+  df.clean %>% 
+  filter(
+    vmt < 300 # , # 109
+    #age_OE___NotMissing == 1, #119
+    #homeown != 'Missing' # 136
+  ) %>%
+  mutate(
+    # New Cols
+    JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car,
+    has_youngchildren = if_else(youngchildren > 0, 1, 0),
+    #PopDens_two = PopDens_two/1000,
+    cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, cbsa_code, 'Other'),
+    major_cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, 'major', 'minor')
+  ) %>%
+  select(
+    id,
+    !!dv,
+    !!!BE_vars.18,
+    !!!demo_controls.18
+  ) %>%
+  #select(-age_OE___NotMissing) %>%
+  # Fix it so that Missing is a separate category for HH-Income, Education
+  mutate(
+    hhincome___Missing = abs(1 - hhincome_OE___NotMissing),
+    education___Missing = abs(1 - education_OE___NotMissing),
+    age___Missing = abs(1 - age_OE___NotMissing),
+  ) %>%
+  select(-hhincome_OE___NotMissing, -education_OE___NotMissing, -age_OE___NotMissing)
+
+# So we want to instead of including Missing as a first value, we want to set an additional flag for 'Missing' and then 
+
+# Save scaling values and summaries
+df.scalars.18 <- 
+  df.modeling18 %>% 
+  select(!!!BE_vars.18) %>%
+  summarize(across(
+    everything(), 
+    .fns = c('mean' = mean, 'sd' = sd, 'quartile1' = \(x) quantile(x, .25), 'median' = median, 'quartile3' = \(x) quantile(x, .75)),
+    .names = '{.col}___{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '___', names_to = c('col', 'name')) %>%
+  pivot_wider()
+
+```
+
+#### 18 - Add Interaction terms
+```{r model18 - add interaction terms}
+# Add Interaction terms
+get_summary_val <- function(var, metric, summary_tbl) {
+  summary_tbl[[which(summary_tbl$col == var), metric]]
+}
+
+col_name_to_add <- 'loadDens_X_RetDens_above_med'
+BE_vars.18 <- c(BE_vars.18, col_name_to_add)
+df.modeling18[[col_name_to_add]] <- if_else(
+    (df.modeling18$NetLoadDens_OX24_two > get_summary_val('NetLoadDens_OX24_two', 'median', df.scalars.18)) &
+      (df.modeling18$RetDens_bg > get_summary_val('RetDens_bg', 'median', df.scalars.18)),
+    1,0)
+```
+
+#### 18 - Scaling
+```{r model18 - scaling}
+# Now Scale the BE-cols
+BE_vars.18.to_scale <- c('PopDens_two', 'RetDens_bg', 'NetLoadDens_OX24_two', 'StreetDens_OX24_two','JobsWi45_transit_to_car_ratio', 'NumBusStops_one')
+
+stopifnot(all(BE_vars.18.to_scale %in% BE_vars.18))
+
+df.modeling18 <- 
+  df.modeling18 %>%
+  mutate(across(
+    !!BE_vars.18.to_scale,
+    \(x) scale(x)[,1]
+  ))
+```
+
+#### 18 - Model Setup & Run
+```{r model18 model setup}
+# dummify
+df.modeling18.dummies <- dummy_cols(df.modeling18, remove_selected_columns = TRUE, remove_most_frequent_dummy = FALSE)
+
+names18 <- df.modeling18.dummies %>% names()
+
+# formula
+# Set Vars
+vars_to_remove_18 <- c('cbsa_Other', 'race_White', 'homeown_Own', 'sex_Female', 'ethnicity_Non-Hispanic')
+vars18 <- names18[3:length(names18)]
+vars18 <- vars18[vars18 %notin% vars_to_remove_18]
+
+form18 <- as.formula(paste(dv, '~', paste0(vars18, collapse='+')))
+
+# Model
+model18 <- AER::tobit(form18, left=0, data=df.modeling18.dummies)
+
+summary(model18)
+which(is.na(coef(model18))) # <- test for aliasing
+
+
+model18 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model18_raw.csv')
+```
+
+
+
+### 18 - Analyze/Visualize Prep
+
+#### 18 - Set Variable Titles 
+```{r model18 - analyze}
+new_names <- 
+  names(coef(model18)) %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('hhincome___', 'HH-Income: ') %>%
+  str_replace('education_OE___', 'Educ: ') %>%
+  str_replace('education___', 'Educ: ') %>%
+  str_replace('age___', 'Age:') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('ethnicity', 'Eth:') %>%
+  str_replace('homeown', 'Home:') %>%
+  str_replace('AI_Other_Multiple', 'AI/Other/Multiple') %>%
+  str_replace('sex', 'Sx:') %>%
+  # Constructed Vars
+  str_replace('JobsWi45_transit_to_car_ratio', 'Jobs w/i 45min (transit to car)') %>%
+  str_replace('loadDens_X_RetDens_above_med', 'LoadDens X RetDens > med') %>%
+  str_replace_all('_', ' ') %>%
+  #str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  # Other
+  str_replace('youngchildren TRUE', 'Has Young Children') %>%
+  str_replace('youngchildren', '# Young Children') %>%
+  str_replace('distrail walk', 'Has Rail Access Walk') %>%
+  # CBSA
+  str_replace('cbsa 41860', 'CBSA: San Francisco/Oakland') %>% 
+  str_replace('cbsa 40900', 'CBSA: Sacramento') %>% 
+  str_replace('cbsa 31080', 'CBSA: Los Angeles/Orange Co.') %>% 
+  str_replace('cbsa 40140', 'CBSA: Riverside') %>% 
+  str_replace('cbsa 41940', 'CBSA: San Jose') %>% 
+  str_replace('cbsa 41740', 'CBSA: San Diego') %>%
+  I()
+new_names <- set_names(names(coef(model18)), new_names)  
+new_names
+
+model18 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+```
+
+#### 18 - Setup Plotting DF
+```{r model18-coef-plot}
+# Create Plotting DF
+model18.pltdf <- 
+  model18 %>%
+  tidy_tobit_model() %>% 
+  # Add Stars
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names), new_names)[v]), v, set_names(names(new_names), new_names)[v]),
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]), # <- first try just splitting on :
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Educ','Race','Eth','Sx','CBSA','Home') ~ grp,
+                    grp %in% c('# Young Children','HH-Size', 'Has Young Children') ~ 'Fam',
+                    grp %in% c('(Intercept)', 'Log(scale)') ~ 'Mod',
+                    .default = 'Built-Env.'),
+    grp = factor(grp, levels = c('Built-Env.','Mod','Race','Eth','Sx', 'Age','HH-Income','Educ','Fam','Home','CBSA'))
+  ) %>%
+  select(grp, everything())
+
+# Add in means and sds
+var_summaries.18 <- 
+  # Calculate mean and sd from the scaled table
+  df.modeling18.dummies %>%
+  select(-id, -vmt) %>%
+  summarize(across(
+    where(is.numeric),
+    .fns = c('mean' = mean, 'sd' = sd),
+    .names = '{.col}_____{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '_____', names_to = c('col', 'name')) %>%
+  pivot_wider() %>%
+  # Now grabt he prescaled values from the scalar df
+  left_join(
+    df.scalars.18,
+    by = c('col'='col'),
+    suffix = c('', '.prescaled')
+  ) %>%
+  mutate(
+    # Here coalesce takes the prescaled value where it exists
+    mean = coalesce(mean.prescaled, mean),
+    sd = coalesce(sd.prescaled, sd)
+  ) %>%
+  select(-ends_with('.prescaled'))
+  
+# Now add the scaled data as additional columns
+model18.pltdf <-
+  model18.pltdf %>%
+  left_join(
+    var_summaries.18,
+    by = c('v' = 'col')
+  )
+
+# Sort the Built-Env groups by distance band
+BLOCK_GROUP_SENTINEL_VALUE <- '.001'
+model18.pltdf$dist_band<- model18.pltdf$Term %>%
+  str_replace('\\(bg\\)', paste0('(', BLOCK_GROUP_SENTINEL_VALUE, 'mi)')) %>%
+  str_extract( '\\([^\\d]*(\\d+)[^\\d]*\\)') %>%
+  str_replace('mi\\)','') %>%
+  str_replace('\\(', '') %>%
+  as.numeric()
+model18.pltdf <- 
+  model18.pltdf %>%
+  arrange(grp, desc(dist_band))
+
+# Join in VIF
+vif.18 <- tibble(var = names(car::vif(model18)), vif=car::vif(model18))
+
+model18.pltdf <-
+  model18.pltdf %>%
+  inner_join(
+    vif.18,
+    'by' = c('v' = 'var')
+  )
+
+#View(model17.pltdf)
+model18.pltdf
+```
+
+### 18 - Visualize
+```{r model18 all-std-viz}
+# VIF Plot
+plot_vif(model18.pltdf, title = 'Model 18: VIF')
+
+# Corrplot
+BE_vars.18.names <- set_names(
+  model18.pltdf[model18.pltdf$grp == 'Built-Env.', ]$v,
+  model18.pltdf[model18.pltdf$grp == 'Built-Env.', ]$Term 
+)
+plot_corrplot(df.modeling18.dummies, vars_named = BE_vars.18.names, title = 'Model 18: CorrPlot')
+
+# Coefs
+plot_regression_coefs(model18.pltdf, title = 'Model 18: Regression Coefficients (full model)') + 
+  coord_cartesian(clip = 'off') + 
+  scale_x_continuous(breaks=scales::breaks_width(5), minor_breaks=scales::breaks_width(1), limits = c(-10, 10), labels = signs::signs_format(add_plusses=T)) + 
+  annotation_custom(grob = grid::linesGrob(), xmin = -22, xmax = 0, ymin = .4, ymax = .4) + 
+  theme(
+    strip.background = element_rect(color = 'grey22')#,
+    #axis.text.y = ggtext::element_markdown(color = ifelse(str_detect(model18.pltdf$Term, 'Missing$'), 'firebrick3','black'))
+  )
+
+# BE-Coefs
+model18.pltdf %>%
+  mutate(grp2 = case_when(is.na(dist_band) ~ 'Other',
+                          dist_band == as.numeric(BLOCK_GROUP_SENTINEL_VALUE) ~ 'Block Grp',
+                          .default = paste0(scales::number(dist_band),'mi')
+                )) %>%
+  filter(grp == 'Built-Env.') %>%
+  mutate(grp = factor(grp2, c('2.00mi', '1.00mi','0.75mi','0.5mi','0.375mi','0.25mi','Block Grp','Other'))) %>%
+plot_regression_coefs(hide_nonprimary_grps = FALSE, display_summaries = TRUE, title = 'Model 18: Regression Coefficients (Built-Env Vars)', add_labels=TRUE) +
+  scale_x_continuous(breaks=scales::breaks_width(5), minor_breaks=scales::breaks_width(1), limits = c(-10, 10), labels = signs::signs_format(add_plusses=T))
+  #coord_cartesian(clip = 'off') + 
+  #annotation_custom(grob = grid::linesGrob(), xmin = -11.7, xmax = 0, ymin = .404, ymax = .404)
+```
+
+## (19) Model 19
+
+### 19 - Modeling
+#### 19 - Data Prep
+
+- include Jobs w/i 45 min (only Car)
+- change youngchildren to binary
+```{r model19 modeling setup}
+demo_controls.19 <- c(demo_controls, 'cbsa')
+demo_controls.19$sex <- 'sex'
+demo_controls.19[[8]] <- 'has_youngchildren' # create
+
+MAJOR_CBSAS <- c(40900, 31080, 41740, 41860, 40140, 41940)
+
+BE_vars.19 <- c('PopDens_two', 'RetDens_bg', 'distrail_walk_quarter', 'distrail_walk_one', 'NumBusStops_one', 'NetLoadDens_OX24_two', 'JobsWi45_transit_to_car_ratio',
+                'JobsWithin45_Car', 
+                'StreetDens_OX24_two', 'Missing_StreetDens_OX24_two'
+                #'IntersectionDens_OX24_two', 'Missing_IntersectionDens_OX24_two',
+            )
+
+df.modeling19 <- 
+  df.clean %>% 
+  filter(
+    vmt < 300 # , # 109
+    #age_OE___NotMissing == 1, #119
+    #homeown != 'Missing' # 136
+  ) %>%
+  mutate(
+    # New Cols
+    JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car,
+    has_youngchildren = if_else(youngchildren > 0, 1, 0),
+    #PopDens_two = PopDens_two/1000,
+    cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, cbsa_code, 'Other'),
+    major_cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, 'major', 'minor')
+  ) %>%
+  select(
+    id,
+    !!dv,
+    !!!BE_vars.19,
+    !!!demo_controls.19
+  ) %>%
+  #select(-age_OE___NotMissing) %>%
+  # Fix it so that Missing is a separate category for HH-Income, Education
+  mutate(
+    hhincome___Missing = abs(1 - hhincome_OE___NotMissing),
+    education___Missing = abs(1 - education_OE___NotMissing),
+    age___Missing = abs(1 - age_OE___NotMissing),
+  ) %>%
+  select(-hhincome_OE___NotMissing, -education_OE___NotMissing, -age_OE___NotMissing)
+
+# So we want to instead of including Missing as a first value, we want to set an additional flag for 'Missing' and then 
+
+# Save scaling values and summaries
+df.scalars.19 <- 
+  df.modeling19 %>% 
+  select(!!!BE_vars.19) %>%
+  summarize(across(
+    everything(), 
+    .fns = c('mean' = mean, 'sd' = sd, 'quartile1' = \(x) quantile(x, .25), 'median' = median, 'quartile3' = \(x) quantile(x, .75)),
+    .names = '{.col}___{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '___', names_to = c('col', 'name')) %>%
+  pivot_wider()
+
+```
+
+#### 19 - Add Interaction terms
+```{r model18 - add interaction terms}
+# Add Interaction terms
+get_summary_val <- function(var, metric, summary_tbl) {
+  summary_tbl[[which(summary_tbl$col == var), metric]]
+}
+
+col_name_to_add <- 'loadDens_X_RetDens_above_med'
+BE_vars.19 <- c(BE_vars.19, col_name_to_add)
+df.modeling19[[col_name_to_add]] <- if_else(
+    (df.modeling19$NetLoadDens_OX24_two > get_summary_val('NetLoadDens_OX24_two', 'median', df.scalars.19)) &
+      (df.modeling19$RetDens_bg > get_summary_val('RetDens_bg', 'median', df.scalars.19)),
+    1,0)
+```
+
+#### 19 - Scaling
+```{r model19 - scaling}
+# Now Scale the BE-cols
+BE_vars.19.to_scale <- c('PopDens_two', 'RetDens_bg', 'NetLoadDens_OX24_two', 'StreetDens_OX24_two','JobsWi45_transit_to_car_ratio', 'NumBusStops_one')
+
+stopifnot(all(BE_vars.19.to_scale %in% BE_vars.19))
+
+df.modeling19 <- 
+  df.modeling19 %>%
+  mutate(across(
+    !!BE_vars.19.to_scale,
+    \(x) scale(x)[,1]
+  ))
+```
+
+#### 19 - Model Setup & Run
+```{r model19 model setup}
+# dummify
+df.modeling19.dummies <- dummy_cols(df.modeling19, remove_selected_columns = TRUE, remove_most_frequent_dummy = FALSE)
+
+names19 <- df.modeling19.dummies %>% names()
+
+# formula
+# Set Vars
+vars_to_remove_19 <- c('cbsa_Other', 'race_White', 'homeown_Own', 'sex_Female', 'ethnicity_Non-Hispanic')
+vars19 <- names19[3:length(names19)]
+vars19 <- vars19[vars19 %notin% vars_to_remove_19]
+
+form19 <- as.formula(paste(dv, '~', paste0(vars19, collapse='+')))
+
+# Model
+model19 <- AER::tobit(form19, left=0, data=df.modeling19.dummies)
+
+summary(model19)
+which(is.na(coef(model19))) # <- test for aliasing
+
+
+model19 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model19_raw.csv')
+```
+
+
+
+### 19 - Analyze/Visualize Prep
+
+#### 19 - Set Variable Titles 
+```{r model19 - analyze}
+new_names <- 
+  names(coef(model19)) %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('hhincome___', 'HH-Income: ') %>%
+  str_replace('education_OE___', 'Educ: ') %>%
+  str_replace('education___', 'Educ: ') %>%
+  str_replace('age___', 'Age:') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('ethnicity', 'Eth:') %>%
+  str_replace('homeown', 'Home:') %>%
+  str_replace('AI_Other_Multiple', 'AI/Other/Multiple') %>%
+  str_replace('sex', 'Sx:') %>%
+  # Constructed Vars
+  str_replace('JobsWi45_transit_to_car_ratio', 'Jobs w/i 45min (transit to car)') %>%
+  str_replace('loadDens_X_RetDens_above_med', 'LoadDens X RetDens > med') %>%
+  str_replace_all('_', ' ') %>%
+  #str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  # Other
+  str_replace('youngchildren TRUE', 'Has Young Children') %>%
+  str_replace('youngchildren', '# Young Children') %>%
+  str_replace('distrail walk', 'Has Rail Access Walk') %>%
+  # CBSA
+  str_replace('cbsa 41860', 'CBSA: San Francisco/Oakland') %>% 
+  str_replace('cbsa 40900', 'CBSA: Sacramento') %>% 
+  str_replace('cbsa 31080', 'CBSA: Los Angeles/Orange Co.') %>% 
+  str_replace('cbsa 40140', 'CBSA: Riverside') %>% 
+  str_replace('cbsa 41940', 'CBSA: San Jose') %>% 
+  str_replace('cbsa 41740', 'CBSA: San Diego') %>%
+  I()
+new_names <- set_names(names(coef(model19)), new_names)  
+new_names
+
+model19 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+```
+
+#### 19 - Setup Plotting DF
+```{r model19-coef-plot}
+# Create Plotting DF
+model19.pltdf <- 
+  model19 %>%
+  tidy_tobit_model() %>% 
+  # Add Stars
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names), new_names)[v]), v, set_names(names(new_names), new_names)[v]),
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]), # <- first try just splitting on :
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Educ','Race','Eth','Sx','CBSA','Home') ~ grp,
+                    grp %in% c('# Young Children','HH-Size', 'Has Young Children') ~ 'Fam',
+                    grp %in% c('(Intercept)', 'Log(scale)') ~ 'Mod',
+                    .default = 'Built-Env.'),
+    grp = factor(grp, levels = c('Built-Env.','Mod','Race','Eth','Sx', 'Age','HH-Income','Educ','Fam','Home','CBSA'))
+  ) %>%
+  select(grp, everything())
+
+# Add in means and sds
+var_summaries.19 <- 
+  # Calculate mean and sd from the scaled table
+  df.modeling19.dummies %>%
+  select(-id, -vmt) %>%
+  summarize(across(
+    where(is.numeric),
+    .fns = c('mean' = mean, 'sd' = sd),
+    .names = '{.col}_____{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '_____', names_to = c('col', 'name')) %>%
+  pivot_wider() %>%
+  # Now grabt he prescaled values from the scalar df
+  left_join(
+    df.scalars.19,
+    by = c('col'='col'),
+    suffix = c('', '.prescaled')
+  ) %>%
+  mutate(
+    # Here coalesce takes the prescaled value where it exists
+    mean = coalesce(mean.prescaled, mean),
+    sd = coalesce(sd.prescaled, sd)
+  ) %>%
+  select(-ends_with('.prescaled'))
+  
+# Now add the scaled data as additional columns
+model19.pltdf <-
+  model19.pltdf %>%
+  left_join(
+    var_summaries.19,
+    by = c('v' = 'col')
+  )
+
+# Sort the Built-Env groups by distance band
+BLOCK_GROUP_SENTINEL_VALUE <- '.001'
+model19.pltdf$dist_band<- model19.pltdf$Term %>%
+  str_replace('\\(bg\\)', paste0('(', BLOCK_GROUP_SENTINEL_VALUE, 'mi)')) %>%
+  str_extract( '\\([^\\d]*(\\d+)[^\\d]*\\)') %>%
+  str_replace('mi\\)','') %>%
+  str_replace('\\(', '') %>%
+  as.numeric()
+model19.pltdf <- 
+  model19.pltdf %>%
+  arrange(grp, desc(dist_band))
+
+# Join in VIF
+vif.19 <- tibble(var = names(car::vif(model19)), vif=car::vif(model19))
+
+model19.pltdf <-
+  model19.pltdf %>%
+  inner_join(
+    vif.19,
+    'by' = c('v' = 'var')
+  )
+
+#View(model17.pltdf)
+model19.pltdf
+```
+
+#### 19 Set Default Value
+```{r modle19 set default-vals}
+model19.pltdf.test <- 
+  model19.pltdf %>% 
+    mutate(default_val = case_when(grp == 'Built-Env.' ~ '', grp == 'Eth' ~ 'Non-Hispanic', grp == 'Sx' ~ "Female", grp %in% c('Age','HH-Income','Educ') ~ "Not Missing", grp == 'Race' ~ "White", .default = "Other")) %>% 
+    mutate(default_val = if_else(default_val == '', 'N/A', paste0('Default:\n[', default_val,']'))) %>% 
+  select(grp, v, Term, default_val, everything())
+    
+```
+
+### 19 - Visualize
+```{r model19 all-std-viz}
+# VIF Plot
+plot_vif(model19.pltdf.test, title = 'Model 19: VIF')
+
+# Corrplot
+BE_vars.19.names <- set_names(
+  model19.pltdf[model19.pltdf$grp == 'Built-Env.', ]$v,
+  model19.pltdf[model19.pltdf$grp == 'Built-Env.', ]$Term 
+)
+plot_corrplot(df.modeling19.dummies, vars_named = BE_vars.19.names, title = 'Model 19: CorrPlot')
+
+# Coefs
+plot_regression_coefs(model19.pltdf.test, title = 'Model 19: Regression Coefficients (full model)')# + 
+model19.pltdf.test %>% 
+  filter(Term != 'JobsWithin45_Car') %>%
+  mutate(
+    grp = fct_recode(grp, 'Ethicity' = 'Eth', 'Sex' = 'Sx', 'Family' = 'Fam', 'Education' = 'Educ', 'Model' = 'Mod'),
+    default_val = str_replace(default_val, 'Default:\n','')
+  ) %>% 
+  plot_regression_coefs(remove_missing_flags = TRUE) + 
+  theme(
+    strip.text = element_text(size = 14),
+    panel.text = element_text(size = 14)
+  )
+  
+  # coord_cartesian(clip = 'off') + 
+  # scale_x_continuous(breaks=scales::breaks_width(5), minor_breaks=scales::breaks_width(1), limits = c(-10, 10), labels = signs::signs_format(add_plusses=T)) + 
+  # annotation_custom(grob = grid::linesGrob(), xmin = -22, xmax = 0, ymin = .4, ymax = .4) + 
+  # theme(
+  #   strip.background = element_rect(color = 'grey22')#,
+    #axis.text.y = ggtext::element_markdown(color = ifelse(str_detect(model18.pltdf$Term, 'Missing$'), 'firebrick3','black'))
+  #)
+
+# BE-Coefs
+model19.pltdf.test %>%
+    filter(Term != 'JobsWithin45_Car') %>%
+    #filter(!str_detect(Term, 'Missing')) %>%
+    filter(p.value < .1) %>%
+  mutate(grp2 = case_when(is.na(dist_band) ~ 'Other',
+                          dist_band == as.numeric(BLOCK_GROUP_SENTINEL_VALUE) ~ 'Block Grp',
+                          .default = paste0(scales::number(dist_band),'mi')
+                )) %>%
+  filter(grp == 'Built-Env.') %>%
+  mutate(grp = factor(grp2, c('2.00mi', '1.00mi','0.75mi','0.5mi','0.375mi','0.25mi','Block Grp','Other'))) %>%
+plot_regression_coefs(hide_nonprimary_grps = FALSE, display_summaries = FALSE, add_labels=TRUE, add_demarcation_lines = FALSE, add_column_headers = FALSE) +
+    facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+    theme(axis.text.y = element_text(size=14))
+```
+
+# Data Exploration tidbits
+```{r data-explo} 
+df.clean %>%
+  filter(vmt < 300) %>%
+  ggplot(aes(x = PopDens_two, y = vmt)) + 
+  geom_point(alpha = .1)
+
+data$NumBusStops_one  
+
+df.clean %>%
+  ggplot(aes(x = NumBusStops_bg)) +
+  geom_histogram()
+  
+
+df.clean %>% 
+  filter(NumBusStops_bg > 30) %>%
+  group_by(EmpDens_bg) %>%
+  select(NumBusStops_bg) %>%
+  arrange(desc(NumBusStops_bg))
+```
+
+
+# MARS Workflow
+```{r mars data}
+library(earth)
+library(caret)
+
+names(df.clean)
+  
+
+mars1 <- earth::earth(form17, data=df.modeling17.dummies)
+mars1.no_dummies <- earth::earth(vmt~., data=df.modeling17 %>% select(-id))
+summary(mars1.no_dummies)
+
+# Try a FULL model
+data.modeling_full <- 
+  df.clean %>%
+  select(
+    -c(id, veh_trips),
+    -c(cbsa_title, age_bucket, hhincome_est)
+  ) %>% 
+  filter(vmt < 300,
+         !is.na(age_est)) %>% #remove missing age because it seems easier than interpolating it
+  filter(complete.cases(.)) # Does nothing after the removal above
+  
+mars_full <- earth::earth(vmt ~ ., data=data.modeling_full, degree=2)
+summary(mars_full)
+# Takeaways:
+# - Similar cut-point at NetLoadDens_OX24_two - 
+# - age > 20, age > 50
+# - Income > 35k, Income > 75k
+# - HHsize >/< 4 (similar to young_children)
+# - Distrail_walk_raw (3.2) (I'm not sure what units these are)
+
+# Re-run with degree 3
+data.modeling_full %>% 
+  mutate(over = NetLoadDens_OX24_two > 243.837) %>%
+  group_by(over) %>%
+  summarize(n())
+
+# Interaction Terms:
+# - SexMale X HH-Income > 35k
+# - Low HH-szie ()
+# - Income > 35k, 
+```
+
+# Xgboost Workflow
+
+## Data Setup
+```{r xgboost-setup}
+library(xgboost)
+library(caret)
+set.seed(23)
+
+# Set which dataset
+#df.xg <- select(df.modeling16.dummies, -vmt_pred)
+df.xg <- df.modeling16
+
+# Split test/train
+parts <- createDataPartition(df.xg$id, p = .8, list = F)
+train <- df.xg[parts,]
+test <- df.xg[-parts,]
+
+# Define IVs/RVs
+train.X <- data.matrix(select(train, -vmt, -id))
+train.y <- train$vmt
+test.X <- data.matrix(select(test, -vmt, -id))
+test.y <- test$vmt
+
+# Define xgb datasets
+xgb.train <- xgb.DMatrix(data = train.X, label = train.y)
+xgb.test <- xgb.DMatrix(data = test.X, label = test.y)
+```
+
+## Run
+```{r xgb modeling}
+watchlist <- list(train=xgb.train, test=xgb.test)
+
+# Fit model
+model.xgb <- xgb.train(data = xgb.train, max.depth = 10, watchlist=watchlist, nround=20)
+
+# Make Predictions
+pred.y <- predict(model.xgb, xgb.test)
+```
+
+## XGB: Evaluate
+
+```{r xgb evaluate}
+# MSE
+mean((test.y - pred.y)**2) # MSE: 741.215
+
+caret::RMSE(test.y, pred.y) # RMSE: 27.225
+
+# Importance matrix
+
+nms <- df.xg %>% rename(new_names[new_names %in% names(df.xg)]) %>% select(-vmt) %>% names()
+nms <- df.xg %>% rename(new_names[new_names %in% names(df.xg)]) %>% select(-id, -vmt) %>% names()
+
+imp.matrix <- xgb.importance(nms, model= model.xgb)
+xgb.ggplot.importance(imp.matrix, top_n = 10)
+```
