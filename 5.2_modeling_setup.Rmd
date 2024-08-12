@@ -1,0 +1,45 @@
+---
+title: "5.4 Modeling Setup"
+output: html_notebook
+---
+
+### Demographic Controls
+```{r}
+demos.bucket_type <- 'open_ended' # one of c('discrete', 'continuous', 'open_ended')
+demos.consolidate_vars <- TRUE # Use slimmer versions of columns
+
+demo_controls <- c(
+  # Age 
+  switch(demos.bucket_type, 
+           discrete   = 'age_bucket',
+           open_ended = expr(starts_with('age_OE')), # add later
+           continuous = 'age_est',
+           NA
+  ),
+  # HH_Income
+  switch(demos.bucket_type,
+         discrete   = 'hhincome_cat',
+         open_ended = expr(starts_with('hhincome_OE')), # add later
+         continuous = 'hhincome_est',
+         NA
+  ),
+  'hhsize', 
+  # Education
+  switch(demos.bucket_type, 
+         discrete   = 'education',
+         open_ended = expr(starts_with('education_OE')), # add later
+         continuous = 'education',
+         NA),
+  # Sex
+  'sex' = if_else(demos.consolidate_vars, 'sex_consolidated', 'sex'), 
+  # Race
+  'race' = if_else(demos.consolidate_vars, 'race_consolidated', 'race'), 
+  # Home_Ownership
+  'homeown', 
+  # Young Children
+  'youngchildren'
+)
+
+#demo_quo <- quo(!!!demo_controls)
+df.clean %>% select(!!!demo_controls)
+```

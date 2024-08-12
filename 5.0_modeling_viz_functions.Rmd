@@ -1,0 +1,228 @@
+---
+title: "5.0 Modeling Viz Functions"
+output: html_notebook
+---
+
+# Functions to be used in the modeling functions
+
+
+## (func-def) Tidy Tobit Model
+This function takes in an output object from the `AER::tobit` function and returns it as a tidy-table of all the necessary 
+
+```{r tidy-tobit-model}
+tidy_tobit_model <- function(model, print=F) {
+  tidy_model <- summary(model)$coefficients %>% broom::tidy()
+  
+  tidy_model$term_name <- vars_to_include[tidy_model$term]
+  
+  tidy_model_clean <- tidy_model %>% 
+    select(v = term, term = term_name, everything()) %>%
+    separate(term, into = c('Term', 'Value'), sep = NAMES_SEP)
+  
+  if(print) {
+    tidy_model_clean %>%
+      print(n = 43)
+  }
+  
+  return(tidy_model_clean)
+}
+```
+
+
+## (func-def) plot_vif 
+```{r function plot vif}
+plot_vif <- function(pltdf, title=NA, remove_group_name = TRUE) {
+  df.plt <- pltdf
+  
+  if(remove_group_name) 
+    df.plt$Term <- strsplit(df.plt$Term, ':') %>% sapply(tail, 1)
+      
+  plt <- df.plt %>%
+    ggplot(aes(x     = vif, 
+               y     = fct_rev(as_factor(Term)), 
+               label = signif_stars,
+               fill  = factor(signif_level),
+               group = fct_rev(grp)
+               # label = scales::number(p.value, accuracy = .0001)
+             )) + 
+             #label = paste0(p.value, ': ', signif))) +
+  geom_bar(stat='identity', color = 'grey64') +
+  #geom_text(nudge_x = .65, nudge_y = 0) + #-.25) + 
+  geom_text(size = 6, nudge_x = .55, nudge_y = -.25) + 
+  scale_fill_manual(values = set_names(
+      c(colorRampPalette(c('#efefef', 'dodgerblue3'))(4), 'dodgerblue4'), 
+      rev(paste0('<' , tail(p_cutpoints, -1))))) + 
+  guides(fill = guide_legend(reverse=T)) + 
+  labs(
+    title = title,
+    x = 'Variance Inflation',
+    y = NULL,
+    fill = 'Signif.\n Level'
+  ) + 
+  facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+  theme(
+    strip.placement = 'outside',
+    strip.clip='off',
+    panel.spacing = unit(0, 'in'), 
+    panel.border = element_rect(color='gray33', fill=NA, linetype=1)#,
+    #panel.grid.major = element_blank()
+  )
+  
+  plt
+}
+```
+
+## (func-def) plot_corrpplot
+```{r function plot corrplot}
+# Function
+plot_corrplot <- function(pltdf, vars_named, title='CorrPlot') {
+  pltdf %>%
+  select(!!!vars_named) %>%
+  cor() %>%
+  ggcorrplot::ggcorrplot(
+    lab = TRUE, lab_size = 3.5,
+    show.diag = FALSE,
+    title = title
+  )
+}
+```
+
+## (func-def) plot_regression_coefs
+```{r function plot regression coefs}
+# Make Regression Plot
+plot_regression_coefs <- function(plotdf, title = NULL, hide_nonprimary_grps = FALSE, primary_grps = c('Built-Env.'), remove_missing_flags=FALSE, display_summaries=FALSE, remove_group_name=TRUE, add_labels=FALSE, missing_red=TRUE, add_column_headers=TRUE,
+                                  add_demarcation_lines=TRUE, demarcation_offset=13) {
+  df.plt <- plotdf %>%
+    mutate(hide = (grp %in% primary_grps)) %>%
+    arrange(grp)
+  
+  # Hide groups (usually to display only the ones we care about.)
+  ## Modify 'hide' column to do this
+  if(hide_nonprimary_grps)
+    df.plt <- df.plt %>% 
+      filter(hide)
+  
+  # Remove the group name before the colon
+  if(remove_group_name) 
+    df.plt$Term <- strsplit(df.plt$Term, ':') %>% 
+      sapply(tail, 1) %>% 
+      str_trim() %>%
+      str_replace('Missing', '[Missing]')
+  
+  # Remove all Missing values
+  if(remove_missing_flags)
+    df.plt <- df.plt %>%
+      filter(Term != '[Missing]')
+  
+  if(display_summaries) {
+    df.plt$Term <- paste0(df.plt$Term, '\n(',
+          'µ: ', scales::number(df.plt$mean, accuracy=.01), 
+          '  σ: ', scales::number(df.plt$sd, accuracy=.01),
+          ')')
+  }
+  
+  # Create separate factor version of Terem and move 'Missing' to end
+  df.plt$Term_display <- df.plt$Term %>% 
+    as_factor() %>% 
+    fct_relevel('[Missing]', after = Inf) %>% 
+    fct_rev()
+  #df.plt$Term_display <- fct_recode(df.plt$Term_display, 'Missing', '[Missing]')
+  
+  # Color "Missing' as red --> This doesn't work
+  y_axis_colors <- 'black'
+  if(missing_red) {
+    y_axis_colors <- ifelse(str_detect(df.plt$Term_display, 'Missing$'), 'firebrick3', 'black')
+  }
+  
+  # Default Val
+  if('default_val' %notin% names(df.plt))
+    df.plt$default_val <- NA
+  
+  # Find max coef for even axes
+  max_coef <- max(abs(df.plt$estimate))
+  
+  # Function to format facets
+  n_grps <- length(unique(model19.pltdf.test$grp)) + if_else(add_column_headers, 1, 0)
+  facet_formatter <- function(x) {
+      if((add_column_headers) && (x %% n_grps == 1)) {
+        # this is for the colun headers
+        element_text(size = 14, face='bold')
+      } else if(x <= n_grps) {
+        # First Column (Group)
+        element_text(size=13) 
+      } else if(x <= 2*n_grps)  {
+        # Second Column (Base Value) 
+        element_text(size=10, color='firebrick2')
+      }
+  }
+  
+  # Add Column Headers
+  if(add_column_headers) {
+    table_header_row <- tibble(grp = 'Group', default_val = 'Base Value', Term = NA, estimate = 0, signif_stars = noquote(''), signif_level = noquote('<1)'))
+    df.plt <- bind_rows(table_header_row, df.plt) %>% mutate(grp = fct_inorder(grp))
+  }
+  
+  plt <- df.plt %>%
+    ggplot(aes(
+      y = Term_display, 
+      x = estimate, 
+      fill = factor(signif_level), group = fct_rev(grp),
+      label = signs::signs(estimate, add_plusses = TRUE, format = scales::number_format(accuracy=.001))
+    )) + 
+    geom_bar(stat = 'identity', color = 'grey64') + 
+    scale_fill_manual(values = set_names(
+      c(colorRampPalette(c('#efefef', 'dodgerblue3'))(4), 'dodgerblue4'), 
+      rev(paste0('<' , tail(p_cutpoints, -1)))))  + 
+    labs(
+      x = 'Coefficient Estimate\n(Δ vmt)',
+      y = NULL,
+      #y = 'Variable',
+      fill = 'Signif.\n Level',
+      title = title,
+      color = paste0('Signif at ', ALPHA, ' level')
+    ) + 
+    guides(fill = guide_legend(reverse=T)) + 
+    scale_x_continuous(breaks = scales::breaks_width(5), 
+                       minor_breaks = scales::breaks_width(1), 
+                       limits = c(-max_coef, max_coef),
+                       labels = signs::signs_format(add_plusses=TRUE)) + 
+    theme(
+      title = element_text(size = 15),
+      strip.placement = 'outside',
+      strip.clip='off',
+      strip.switch.pad.wrap = unit(1,'in'),
+      strip.text.y.left = element_text(angle=0, hjust=0),
+      strip.background.y = element_rect(color='grey33', linewidth=.33),
+      panel.spacing.y = unit(.05, 'in'), 
+      panel.border = element_rect(color='gray33', fill=NA, linetype=1,linewidth = unit(.5, 'in')),
+      #axis.text.y.left = element_text(color = c('Missing'='red', 'Other'='black'))
+  ) +
+    ggh4x::facet_grid2(
+    #facet_grid(
+      grp+default_val~., 
+      scales='free', space='free_y', switch='y', 
+      labeller = label_value, 
+      #axes = 'y', 
+      strip=ggh4x::strip_themed(
+        text_y = lapply(1:(n_grps * 2), facet_formatter)
+      )
+    )
+  
+  # Add labels
+  if(add_labels) {
+    plt <- plt + 
+      geom_label(fill = '#efefef')
+  }
+    
+  # Add demarcation lines
+  if(add_demarcation_lines) {
+    plt <- plt + 
+      coord_cartesian(clip = 'off') + 
+      annotation_custom(grob = grid::linesGrob(), xmin = -max_coef - demarcation_offset, xmax = -max_coef + 5, ymin = .4, ymax = .4) + 
+      annotation_custom(grob = grid::linesGrob(), xmin = -max_coef - demarcation_offset, xmax = max_coef, ymin = .055, ymax = .055)
+  }
+  #plt <- plt
+    
+  plt
+}
+```
