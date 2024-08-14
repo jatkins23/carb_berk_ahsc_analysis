@@ -287,7 +287,7 @@ df.clean$education_OE___SomeCollege_and_up <- if_else(df.clean$education == 'Mis
 df.clean$education_OE___Bachelors_and_up <- if_else(df.clean$education == 'Missing', 0, as.numeric(df.clean$education) > 3)
 df.clean$education_OE___Graduate_and_up <- if_else(df.clean$education == 'Missing', 0, as.numeric(df.clean$education) > 4)
 
-
+# Test Output of the transformation
 df.clean %>% 
   select(starts_with('education_OE')) %>%
   rename_with(\(x) str_replace(x, 'education_OE___', '')) %>%
@@ -567,7 +567,7 @@ Mostly the missing values columns, but let's check whatever wasn't included alre
 Go back and look at the dataset as a whole to see what needs to be immediately removed
 
 ```{r dataset-cleanup}
-# Replace `$`s in the column names
+# Replace dollar signs in the column names
 df.clean <- df.clean %>% rename_with(\(x) str_replace(x, '\\$', ''))
 
 # Scale data by 1000s
@@ -607,7 +607,6 @@ data %>%
 
 # Save File
 ```{r save-file}
-
 df.clean %>% 
   write_csv('data/clean_df_for_modeling.csv')
 ```

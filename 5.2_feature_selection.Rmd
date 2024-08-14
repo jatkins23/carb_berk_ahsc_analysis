@@ -3,10 +3,12 @@ title: "5.2 Feature Tuning/Selection"
 output: html_notebook
 ---
 
+This notebook was a process of feature-selection that we went through where we tested all the Built-Environment characteristics at various geographic levels.
+
+Most of this code probably doens't need to be run, but I'm preserving it in case its useful in the future.
+
 
 # Feature Tuning
-
-TODO: Feature selection
 
 
 ## Multi-colinearity in BE cols

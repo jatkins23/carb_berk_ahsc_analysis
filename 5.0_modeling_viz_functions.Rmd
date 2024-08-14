@@ -3,11 +3,14 @@ title: "5.0 Modeling Viz Functions"
 output: html_notebook
 ---
 
-# Functions to be used in the modeling functions
+# Modeling Functions
 
+This documnet contains 4 functions that are used heavily in the modeling process. The first is a function that synthesizes the model output and the later ones are
+
+The goal is that you can essentially treat this as package, and just run this once, and then . Each of the visualization functions outputs a ggplot obejct that can be modified just like any other ggplot object (by adding layers etc.). See other files for example usage
 
 ## (func-def) Tidy Tobit Model
-This function takes in an output object from the `AER::tobit` function and returns it as a tidy-table of all the necessary 
+This function takes in an output object from the `AER::tobit` function and returns it as a tidy-table with all the necessary elements for exporting and piping into the later steps of the process (analysis, tuning and visualization)
 
 ```{r tidy-tobit-model}
 tidy_tobit_model <- function(model, print=F) {
