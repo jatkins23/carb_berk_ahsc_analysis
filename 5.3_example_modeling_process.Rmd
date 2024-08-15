@@ -216,7 +216,7 @@ vars_to_remove.00 <- purrr::imap_chr(defaults_vars.00, \(x, idx) paste0(idx, '_'
 
 # Set Vars
 vars.00 <- names.00[3:length(names.00)]
-#vars.00 <- vars.00[vars.00 %notin% vars_to_remove.00]
+vars.00 <- vars.00[vars.00 %notin% vars_to_remove.00]
 
 form.00 <- as.formula(paste(dv, '~', paste0(vars.00, collapse='+')))
 
@@ -255,7 +255,7 @@ e.g. `'_', ' '` will replace all underscores with spaces so anything after that 
 
 * be careful with special characters, for example, you need the `\\` before '$' otherwise it won't recognize it
 
-### 
+### Set Display Names
 ```{r model00 - set variable names}
 new_names.00 <- 
   names(coef(model.00)) %>%

@@ -549,7 +549,6 @@ df.clean$cbsa_title <- setNames(cbsa_code_dict$cbsatitle, cbsa_code_dict$cbsacod
 
 MAJOR_CBSAS <- c('SAC' = 40900, 'LA_OC' = 31080, 'SD' = 41740, 'SF_OAK' = 41860, 'IE' = 40140, 'SJ' = 41940)
 
-
 df.clean$cbsa_consolidated <- if_else(df.clean$cbsa_code %in% MAJOR_CBSAS, set_names(names(MAJOR_CBSAS), MAJOR_CBSAS)[df.clean$cbsa_code], 'Other')
 
 # Double Check
