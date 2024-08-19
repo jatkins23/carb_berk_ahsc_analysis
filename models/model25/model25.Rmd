@@ -158,20 +158,6 @@ df.modeling25[['loadDens_X_BusStops_below_thresh']] <- if_else(
   0
 )
 
-# Repeat as necessary
-
-# loadDens_X_BusStops_below_thresh = if NetLoadDens Z < -.59 and NumBusStops_one < median
-# NetLoadDens
-thresh.NetLoad <- (-.59 * get_summary_val('NetLoadDens_GF18_two', 'sd', df.scalars.25)) +  get_summary_val('NetLoadDens_GF18_two', 'median', df.scalars.25)
-thresh.NumBusStops <- get_summary_val('NumBusStops_one', 'mean', df.scalars.25)
-
-df.modeling25[['loadDens_X_BusStops_below_thresh']] <- if_else(
-  (df.modeling25$NetLoadDens_GF18_two < thresh.NetLoad) &
-    (df.modeling25$NumBusStops_one < thresh.NumBusStops),
-  1, 
-  0
-)
-
 # add the new columns to the column list if they should be there
 BE_vars.25 <- c(BE_vars.25, 'loadDens_X_RetDens_above_med', 'loadDens_X_BusStops_below_thresh')
 ```

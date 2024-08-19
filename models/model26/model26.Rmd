@@ -207,7 +207,8 @@ vars.26 <- vars.26[vars.26 %notin% vars_to_remove.26]
 form.26 <- as.formula(paste(dv, '~', paste0(vars.26, collapse='+')))
 
 # Model
-model.26 <- AER::tobit(form.26, left=0, data=df.modeling26.dummies)
+install.packages('zelig')
+model.26 <- AER::tobit(form.26, left=0, data=df.modeling26.dummies, cluster=)
 
 # Check Model output
 summary(model.26)
