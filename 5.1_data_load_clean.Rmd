@@ -26,6 +26,8 @@ data.v6 <- data.v6 %>%
   mutate(id = row_number()) %>% 
   select(id, everything())
 
+data <- data.v6
+
 # Load CBSA dictionary for future use
 cbsa_codes <- read_csv('../data/cbsa2fipsxw.csv')
 cbsa_code_dict <- cbsa_codes %>% distinct(cbsacode, cbsatitle)
@@ -33,7 +35,7 @@ cbsa_code_dict <- cbsa_codes %>% distinct(cbsacode, cbsatitle)
 # create new dataframe
 df.clean <- tibble(data.frame(id = data$id, vmt = data$daily_vmt, veh_trips = data$num_privatevehicle_trips))
 df.clean
-````
+```
 
 
 Define DVs
@@ -338,7 +340,23 @@ df.clean %>%
   group_by(race, race_consolidated) %>%
   summarize(n = n(), `%` = n()/n_total)
 ```
-Here we can combine the lower frequency races. We should have ethnicity somewhere??
+
+### `Ethnicity`
+
+```{r ethnicity}
+# Run
+data %>% 
+  group_by(hisp_updated) %>% 
+  summarize(n())
+
+df.clean$ethnicity <- if_else(data$hisp_updated == 'Missing Data', 'Missing', data$hisp_updated)
+
+
+df.clean %>%
+  group_by(race, ethnicity) %>%
+  summarize(n = n(), `%` = n()/n_total)
+```
+
 
 ### `Sex`/`Homeown`/`HH_size`
 ```{r other}
@@ -385,7 +403,7 @@ data %>%
   select(starts_with('NumBusStops'))
 
 
-# Fix columns names
+# Fix columns names -- all already renamed
 data <-
   data %>%
   rename(
@@ -395,21 +413,21 @@ data <-
     JobsWithin45_Transit   = JobsWithin45_Transit_3,
     distrail_car_raw       = Car_DistToRail,
     distrail_walk_raw      = Walk_DistToRail,
-    distrail_car_eighth    = distrail_eighthmi_car, 
-    distrail_car_quarter   = distrail_quartmi_car, 
-    distrail_car_3eighth   = distrail_3eighthmi_car, 
-    distrail_car_half      = distrail_halfmi_car, 
-    distrail_car_3quarter  = distrail_3quartmi_car, 
-    distrail_car_one       = distrail_onemi_car, 
-    distrail_car_far       = distrail_far_car, 
-    distrail_walk_eighth   = distrail_eighthmi_walk, 
-    distrail_walk_quarter  = distrail_quartmi_walk, 
-    distrail_walk_3eighth  = distrail_3eighthmi_walk, 
-    distrail_walk_half     = distrail_halfmi_walk, 
-    distrail_walk_3quarter = distrail_3quartmi_walk, 
+    distrail_car_eighth    = distrail_eighthmi_car,
+    distrail_car_quarter   = distrail_quartmi_car,
+    distrail_car_3eighth   = distrail_3eighthmi_car,
+    distrail_car_half      = distrail_halfmi_car,
+    distrail_car_3quarter  = distrail_3quartmi_car,
+    distrail_car_one       = distrail_onemi_car,
+    distrail_car_far       = distrail_far_car,
+    distrail_walk_eighth   = distrail_eighthmi_walk,
+    distrail_walk_quarter  = distrail_quartmi_walk,
+    distrail_walk_3eighth  = distrail_3eighthmi_walk,
+    distrail_walk_half     = distrail_halfmi_walk,
+    distrail_walk_3quarter = distrail_3quartmi_walk,
     distrail_walk_one      = distrail_onemi_walk,
     distrail_walk_far      = distrail_far_walk,
-    # NumBusStops_bg         = NumBusStops_bg, 
+    NumBusStops_bg         = NumBusStops_bg,
     NumBusStops_quarter    = NumBusStops_quartmi,
     NumBusStops_3eighth    = NumBusStops_3eighthmi,
     NumBusStops_half       = NumBusStops_halfmi,
