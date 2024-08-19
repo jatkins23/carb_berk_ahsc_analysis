@@ -1,0 +1,1179 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+# Model 20 
+## (20) Model 20
+
+### 20 - Modeling
+#### 20 - Data Prep
+
+Model 19 but under 75k income
+
+```{r model20 modeling setup}
+demo_controls.20 <- c(demo_controls, 'cbsa')
+demo_controls.20$sex <- 'sex'
+demo_controls.20[[8]] <- 'has_youngchildren' # create
+
+MAJOR_CBSAS <- c(40900, 31080, 41740, 41860, 40140, 41940)
+
+BE_vars.20 <- c('PopDens_two', 'RetDens_bg', 'distrail_walk_quarter', 'distrail_walk_one', 'NumBusStops_one', 'NetLoadDens_OX24_two', 'JobsWi45_transit_to_car_ratio',
+                'JobsWithin45_Car', 
+                'StreetDens_OX24_two', 'Missing_StreetDens_OX24_two'
+                #'IntersectionDens_OX24_two', 'Missing_IntersectionDens_OX24_two',
+            )
+
+df.modeling20 <- 
+  df.clean %>% 
+  filter(
+    vmt < 300 # , # 109
+    #age_OE___NotMissing == 1, #119
+    #homeown != 'Missing' # 136
+  ) %>%
+  mutate(
+    # New Cols
+    JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car,
+    has_youngchildren = if_else(youngchildren > 0, 1, 0),
+    #PopDens_two = PopDens_two/1000,
+    cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, cbsa_code, 'Other'),
+    major_cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, 'major', 'minor')
+  ) %>%
+  filter(hhincome_OE____75k_and_up == 0) %>% ### <- 
+  select(
+    id,
+    !!dv,
+    !!!BE_vars.20,
+    !!!demo_controls.20
+  ) %>%
+  #select(-age_OE___NotMissing) %>%
+  # Fix it so that Missing is a separate category for HH-Income, Education
+  mutate(
+    hhincome___Missing = abs(1 - hhincome_OE___NotMissing),
+    education___Missing = abs(1 - education_OE___NotMissing),
+    age___Missing = abs(1 - age_OE___NotMissing),
+  ) %>%
+  select(-hhincome_OE___NotMissing, -education_OE___NotMissing, -age_OE___NotMissing, 
+         -c(hhincome_OE____75k_and_up, hhincome_OE___100k_and_up, hhincome_OE___125k_and_up, hhincome_OE___150k_and_up, hhincome_OE___200k_and_up))
+
+# So we want to instead of including Missing as a first value, we want to set an additional flag for 'Missing' and then 
+
+# Save scaling values and summaries
+df.scalars.20 <- 
+  df.modeling20 %>% 
+  select(!!!BE_vars.20) %>%
+  summarize(across(
+    everything(), 
+    .fns = c('mean' = mean, 'sd' = sd, 'quartile1' = \(x) quantile(x, .25), 'median' = median, 'quartile3' = \(x) quantile(x, .75)),
+    .names = '{.col}___{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '___', names_to = c('col', 'name')) %>%
+  pivot_wider()
+
+```
+
+#### 20 - Add Interaction terms
+```{r model20 - add interaction terms}
+# Add Interaction terms
+get_summary_val <- function(var, metric, summary_tbl) {
+  summary_tbl[[which(summary_tbl$col == var), metric]]
+}
+
+col_name_to_add <- 'loadDens_X_RetDens_above_med'
+BE_vars.20 <- c(BE_vars.20, col_name_to_add)
+df.modeling20[[col_name_to_add]] <- if_else(
+    (df.modeling20$NetLoadDens_OX24_two > get_summary_val('NetLoadDens_OX24_two', 'median', df.scalars.20)) &
+      (df.modeling20$RetDens_bg > get_summary_val('RetDens_bg', 'median', df.scalars.20)),
+    1,0)
+```
+
+#### 20 - Scaling
+```{r model20 - scaling}
+# Now Scale the BE-cols
+BE_vars.20.to_scale <- c('PopDens_two', 'RetDens_bg', 'NetLoadDens_OX24_two', 'StreetDens_OX24_two','JobsWi45_transit_to_car_ratio', 'NumBusStops_one')
+
+stopifnot(all(BE_vars.20.to_scale %in% BE_vars.20))
+
+df.modeling20 <- 
+  df.modeling20 %>%
+  mutate(across(
+    !!BE_vars.20.to_scale,
+    \(x) scale(x)[,1]
+  ))
+```
+
+#### 20 - Model Setup & Run
+```{r model20 model setup}
+# dummify
+library(fastDummies)
+df.modeling20.dummies <- dummy_cols(df.modeling20, remove_selected_columns = TRUE, remove_most_frequent_dummy = FALSE)
+
+names20 <- df.modeling20.dummies %>% names()
+
+# formula
+# Set Vars
+vars_to_remove_20 <- c('cbsa_Other', 'race_White', 'homeown_Own', 'sex_Female', 'ethnicity_Non-Hispanic')
+vars20 <- names20[3:length(names20)]
+vars20 <- vars20[vars20 %notin% vars_to_remove_20]
+
+form20 <- as.formula(paste(dv, '~', paste0(vars20, collapse='+')))
+
+# Model
+model20 <- AER::tobit(form20, left=0, data=df.modeling20.dummies)
+
+summary(model20)
+which(is.na(coef(model20))) # <- test for aliasing
+
+
+model20 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model20_raw.csv')
+```
+
+
+
+### 20 - Analyze/Visualize Prep
+
+#### 20 - Set Variable Titles 
+```{r model20 - analyze}
+new_names <- 
+  names(coef(model20)) %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('hhincome___', 'HH-Income: ') %>%
+  str_replace('education_OE___', 'Education: ') %>%
+  str_replace('education___', 'Education: ') %>%
+  str_replace('age___', 'Age:') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('ethnicity', 'Ethnicity:') %>%
+  str_replace('homeown', 'Home:') %>%
+  str_replace('AI_Other_Multiple', 'AI/Other/Multiple') %>%
+  str_replace('sex', 'Sex:') %>%
+  # Constructed Vars
+  str_replace('JobsWi45_transit_to_car_ratio', 'Jobs w/i 45min (transit to car)') %>%
+  str_replace('loadDens_X_RetDens_above_med', 'LoadDens X RetDens > med') %>%
+  str_replace_all('_', ' ') %>%
+  #str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  # Other
+  str_replace('youngchildren TRUE', 'Has Young Children') %>%
+  str_replace('^has youngchildren$', 'Has Young Children') %>%
+  str_replace('^youngchildren$', '# Young Children') %>%
+  str_replace('distrail walk', 'Has Rail Access Walk') %>%
+  # CBSA
+  str_replace('cbsa 41860', 'CBSA: San Francisco/Oakland') %>% 
+  str_replace('cbsa 40900', 'CBSA: Sacramento') %>% 
+  str_replace('cbsa 31080', 'CBSA: Los Angeles/Orange Co.') %>% 
+  str_replace('cbsa 40140', 'CBSA: Riverside') %>% 
+  str_replace('cbsa 41940', 'CBSA: San Jose') %>% 
+  str_replace('cbsa 41740', 'CBSA: San Diego') %>%
+  I()
+new_names <- set_names(names(coef(model20)), new_names)  
+new_names
+
+model20 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+```
+
+#### 20 - Setup Plotting DF
+```{r model20-coef-plot}
+# Create Plotting DF
+model20.pltdf <- 
+  model20 %>%
+  tidy_tobit_model() %>% 
+  # Add Stars
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names), new_names)[v]), v, set_names(names(new_names), new_names)[v]),
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]), # <- first try just splitting on :
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Education','Race','Ethnicity','Sex','CBSA','Home') ~ grp,
+                    grp %in% c('# Young Children','HH-Size', 'Has Young Children') ~ 'Family',
+                    grp %in% c('(Intercept)', 'Log(scale)') ~ 'Model',
+                    .default = 'Built-Env.'),
+    grp = factor(grp, levels = c('Built-Env.','Model','Race','Ethnicity','Sex', 'Age','HH-Income','Education','Family','Home','CBSA'))
+  ) %>%
+  select(grp, everything())
+
+# Add in means and sds
+var_summaries.20 <- 
+  # Calculate mean and sd from the scaled table
+  df.modeling20.dummies %>%
+  select(-id, -vmt) %>%
+  summarize(across(
+    where(is.numeric),
+    .fns = c('mean' = mean, 'sd' = sd),
+    .names = '{.col}_____{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '_____', names_to = c('col', 'name')) %>%
+  pivot_wider() %>%
+  # Now grabt he prescaled values from the scalar df
+  left_join(
+    df.scalars.20,
+    by = c('col'='col'),
+    suffix = c('', '.prescaled')
+  ) %>%
+  mutate(
+    # Here coalesce takes the prescaled value where it exists
+    mean = coalesce(mean.prescaled, mean),
+    sd = coalesce(sd.prescaled, sd)
+  ) %>%
+  select(-ends_with('.prescaled'))
+  
+# Now add the scaled data as additional columns
+model20.pltdf <-
+  model20.pltdf %>%
+  left_join(
+    var_summaries.20,
+    by = c('v' = 'col')
+  )
+
+# Sort the Built-Env groups by distance band
+BLOCK_GROUP_SENTINEL_VALUE <- '.001'
+model20.pltdf$dist_band<- model20.pltdf$Term %>%
+  str_replace('\\(bg\\)', paste0('(', BLOCK_GROUP_SENTINEL_VALUE, 'mi)')) %>%
+  str_extract( '\\([^\\d]*(\\d+)[^\\d]*\\)') %>%
+  str_replace('mi\\)','') %>%
+  str_replace('\\(', '') %>%
+  as.numeric()
+model20.pltdf <- 
+  model20.pltdf %>%
+  arrange(grp, desc(dist_band))
+
+# Join in VIF
+vif.20 <- tibble(var = names(car::vif(model20)), vif=car::vif(model20))
+
+model20.pltdf <-
+  model20.pltdf %>%
+  left_join(
+    vif.20,
+    'by' = c('v' = 'var')
+  )
+
+#View(model17.pltdf)
+model20.pltdf
+```
+
+#### 20 Set Default Value
+```{r model20 set default-vals}
+model20.pltdf.test <- 
+  model20.pltdf %>% 
+    mutate(default_val = case_when(grp == 'Built-Env.' ~ '', grp == 'Ethnicity' ~ 'Non-Hispanic', grp == 'Sex' ~ "Female", grp %in% c('Age','HH-Income','Education') ~ "Not Missing", grp == 'Race' ~ "White", .default = "Other")) %>% 
+    mutate(default_val = if_else(default_val == '', 'N/A', paste0('[', default_val,']'))) %>% 
+  select(grp, v, Term, default_val, everything())
+    
+```
+
+### 20 - Visualize
+```{r model20 all-std-viz}
+# VIF Plot
+plot_vif(model20.pltdf.test, title = 'Model 20: VIF')
+
+# Corrplot
+BE_vars.20.names <- set_names(
+  model20.pltdf[model20.pltdf$grp == 'Built-Env.', ]$v,
+  model20.pltdf[model20.pltdf$grp == 'Built-Env.', ]$Term 
+)
+plot_corrplot(df.modeling20.dummies, vars_named = BE_vars.20.names, title = 'Model 20: CorrPlot')
+
+# Coefs
+plot_regression_coefs(model20.pltdf.test %>% filter(grp != 'Model'), title = 'Model 20: Regression Coefficients (full model)')# + 
+model20.pltdf.test %>% 
+  filter(Term != 'JobsWithin45_Car') %>%
+  mutate(
+    default_val = str_replace(default_val, 'Default:\n','')
+  ) %>% 
+  plot_regression_coefs(remove_missing_flags = TRUE) + 
+  theme(
+    strip.text = element_text(size = 14),
+    panel.text = element_text(size = 14)
+  )
+
+# BE-Coefs
+model20.pltdf.test %>%
+    filter(Term != 'JobsWithin45_Car') %>%
+    #filter(!str_detect(Term, 'Missing')) %>%
+    #filter(p.value < .1) %>%
+  mutate(grp2 = case_when(is.na(dist_band) ~ 'Other',
+                          dist_band == as.numeric(BLOCK_GROUP_SENTINEL_VALUE) ~ 'Block Grp',
+                          .default = paste0(scales::number(dist_band, accuracy=.01),'mi')
+                )) %>%
+  filter(grp == 'Built-Env.') %>%
+  mutate(grp = factor(grp2, c('2.00mi', '1.00mi','0.75mi','0.5mi','0.375mi','0.25mi','Block Grp','Other'))) %>%
+plot_regression_coefs(hide_nonprimary_grps = FALSE, display_summaries = FALSE, add_labels=TRUE, add_demarcation_lines = FALSE, add_column_headers = FALSE, title='Model 20 - Coefs (BE)') +
+    facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+    theme(axis.text.y = element_text(size=14))
+```
+
+# Compare Model 20 and Model 19
+```{r compare}
+
+model20.pltdf.test %>%
+  anti_join(
+    model19.pltdf.test,
+    by = 'v'
+  ) # has_young_family
+
+
+model20.pltdf.test %>%
+  filter(grp == 'Built-Env.') %>%
+  rename(p_value = p.value) %>%
+  inner_join(
+    model19.pltdf.test %>%
+      filter(grp == 'Built-Env.') %>%
+      rename(p_value = p.value),
+    by = 'v',
+    suffix = c('.under75k', '.full')
+  ) %>%
+  select(grp = grp.full, v, Term = Term.full, dist_band = dist_band.full,
+         starts_with('estimate'), starts_with('p_value')) %>%
+  pivot_longer(cols = c(starts_with('estimate'), starts_with('p_value')), names_sep = '\\.', names_to = c('col', 'model')) %>%
+  pivot_wider(names_from = 'col') %>%
+  mutate(
+    signif_stars = 
+      symnum(p_value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p_value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    )
+  ) %>%
+  mutate(grp2 = case_when(is.na(dist_band) ~ 'Other',
+                          dist_band == as.numeric(BLOCK_GROUP_SENTINEL_VALUE) ~ 'Block Grp',
+                          .default = paste0(scales::number(dist_band),'mi')
+                )) %>%
+  mutate(grp = factor(grp2, c('2.00mi', '1.00mi','0.75mi','0.5mi','0.375mi','0.25mi','Block Grp','Other'))) %>% 
+  filter(!str_detect(Term, '^Missing')) %>%
+  ggplot(aes(x = estimate, y = as_factor(Term), grp = model, color = model, fill = signif_level, label = signif_stars)) + 
+  geom_bar(stat = 'identity', position='dodge', linewidth = 1) + 
+  scale_x_continuous(limits = c(-4, 4)) + 
+  scale_color_manual(values = c(full = 'olivedrab4', under75k = 'tomato1')) + 
+  scale_fill_manual(values = set_names(
+      c(colorRampPalette(c('#efefef', 'dodgerblue3'))(4), 'dodgerblue4'), 
+      rev(paste0('<' , tail(p_cutpoints, -1))))) + 
+  labs(
+    title = 'BE Coefficients: Under 75k vs Full',
+    color = 'Model',
+    fill = 'Signif.\nLevel',
+    y = NULL,
+  ) + 
+  #geom_text(position = 'dodge', color = 'grey22', size = 12) + 
+  facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+  theme(
+    strip.placement = 'outside',
+    strip.clip='off',
+    strip.switch.pad.wrap = unit(1,'in'),
+    strip.text.y.left = element_text(angle=0, hjust=0),
+    strip.background.y = element_rect(color='grey33', linewidth=.33),
+    panel.spacing.y = unit(.05, 'in'), 
+    panel.border = element_rect(color='gray33', fill=NA, linetype=1,linewidth = unit(.5, 'in'))
+  )
+  
+```
+
+Now Build Model 21
+# Model 21
+Model 20 but with over 75k instead
+
+```{r model21 modeling setup}
+demo_controls.21 <- c(demo_controls, 'cbsa')
+demo_controls.21$sex <- 'sex'
+demo_controls.21[[8]] <- 'has_youngchildren' # create
+
+MAJOR_CBSAS <- c(40900, 31080, 41740, 41860, 40140, 41940)
+
+BE_vars.21 <- c('PopDens_two', 'RetDens_bg', 'distrail_walk_quarter', 'distrail_walk_one', 'NumBusStops_one', 'NetLoadDens_OX24_two', 'JobsWi45_transit_to_car_ratio',
+                'JobsWithin45_Car', 
+                'StreetDens_OX24_two', 'Missing_StreetDens_OX24_two'
+                #'IntersectionDens_OX24_two', 'Missing_IntersectionDens_OX24_two',
+            )
+
+df.modeling21 <- 
+  df.clean %>% 
+  filter(
+    vmt < 300 # , # 109
+    #age_OE___NotMissing == 1, #119
+    #homeown != 'Missing' # 136
+  ) %>%
+  mutate(
+    # New Cols
+    JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car,
+    has_youngchildren = if_else(youngchildren > 0, 1, 0),
+    #PopDens_two = PopDens_two/1000,
+    cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, cbsa_code, 'Other'),
+    major_cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, 'major', 'minor')
+  ) %>%
+  filter(hhincome_OE____75k_and_up == 1) %>% ### <- 
+  select(
+    id,
+    !!dv,
+    !!!BE_vars.21,
+    !!!demo_controls.21
+  ) %>%
+  #select(-age_OE___NotMissing) %>%
+  # Fix it so that Missing is a separate category for HH-Income, Education
+  mutate(
+    hhincome___Missing = abs(1 - hhincome_OE___NotMissing),
+    education___Missing = abs(1 - education_OE___NotMissing),
+    age___Missing = abs(1 - age_OE___NotMissing),
+  ) %>%
+  select(-hhincome_OE___NotMissing, -education_OE___NotMissing, -age_OE___NotMissing, 
+         -c(hhincome_OE____75k_and_up, hhincome_OE____50k_and_up, hhincome_OE____25k_and_up, hhincome_OE____35k_and_up, hhincome_OE____15k_and_up, hhincome_OE____10k_and_up))
+
+# So we want to instead of including Missing as a first value, we want to set an additional flag for 'Missing' and then 
+
+# Save scaling values and summaries
+df.scalars.21 <- 
+  df.modeling21 %>% 
+  select(!!!BE_vars.21) %>%
+  summarize(across(
+    everything(), 
+    .fns = c('mean' = mean, 'sd' = sd, 'quartile1' = \(x) quantile(x, .25), 'median' = median, 'quartile3' = \(x) quantile(x, .75)),
+    .names = '{.col}___{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '___', names_to = c('col', 'name')) %>%
+  pivot_wider()
+
+```
+
+#### 21 - Add Interaction terms
+```{r model21 - add interaction terms}
+# Add Interaction terms
+get_summary_val <- function(var, metric, summary_tbl) {
+  summary_tbl[[which(summary_tbl$col == var), metric]]
+}
+
+col_name_to_add <- 'loadDens_X_RetDens_above_med'
+BE_vars.21 <- c(BE_vars.21, col_name_to_add)
+df.modeling21[[col_name_to_add]] <- if_else(
+    (df.modeling21$NetLoadDens_OX24_two > get_summary_val('NetLoadDens_OX24_two', 'median', df.scalars.21)) &
+      (df.modeling21$RetDens_bg > get_summary_val('RetDens_bg', 'median', df.scalars.21)),
+    1,0)
+```
+
+#### 21 - Scaling
+```{r model21 - scaling}
+# Now Scale the BE-cols
+BE_vars.21.to_scale <- c('PopDens_two', 'RetDens_bg', 'NetLoadDens_OX24_two', 'StreetDens_OX24_two','JobsWi45_transit_to_car_ratio', 'NumBusStops_one')
+
+stopifnot(all(BE_vars.21.to_scale %in% BE_vars.21))
+
+df.modeling21 <- 
+  df.modeling21 %>%
+  mutate(across(
+    !!BE_vars.21.to_scale,
+    \(x) scale(x)[,1]
+  ))
+```
+
+#### 21 - Model Setup & Run
+```{r model21 model setup}
+# dummify
+library(fastDummies)
+df.modeling21.dummies <- dummy_cols(df.modeling21, remove_selected_columns = TRUE, remove_most_frequent_dummy = FALSE)
+
+names21 <- df.modeling21.dummies %>% names()
+
+# formula
+# Set Vars
+vars_to_remove_21 <- c('cbsa_Other', 'race_White', 'homeown_Own', 'sex_Female', 'ethnicity_Non-Hispanic', 'hhincome___Missing')
+vars21 <- names21[3:length(names21)]
+vars21 <- vars21[vars21 %notin% vars_to_remove_21]
+
+form21 <- as.formula(paste(dv, '~', paste0(vars21, collapse='+')))
+
+# Model
+model21 <- AER::tobit(form21, left=0, data=df.modeling21.dummies)
+
+summary(model21)
+which(is.na(coef(model21))) # <- test for aliasing
+
+
+model21 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model21_raw.csv')
+```
+
+
+
+### 21 - Analyze/Visualize Prep
+
+#### 21 - Set Variable Titles 
+```{r model21 - analyze}
+new_names <- 
+  names(coef(model21)) %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('hhincome___', 'HH-Income: ') %>%
+  str_replace('education_OE___', 'Education: ') %>%
+  str_replace('education___', 'Education: ') %>%
+  str_replace('age___', 'Age:') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('ethnicity', 'Ethnicity:') %>%
+  str_replace('homeown', 'Home:') %>%
+  str_replace('AI_Other_Multiple', 'AI/Other/Multiple') %>%
+  str_replace('sex', 'Sex:') %>%
+  # Constructed Vars
+  str_replace('JobsWi45_transit_to_car_ratio', 'Jobs w/i 45min (transit to car)') %>%
+  str_replace('loadDens_X_RetDens_above_med', 'LoadDens X RetDens > med') %>%
+  str_replace_all('_', ' ') %>%
+  #str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  # Other
+  str_replace('youngchildren TRUE', 'Has Young Children') %>%
+  str_replace('^has youngchildren$', 'Has Young Children') %>%
+  str_replace('^youngchildren$', '# Young Children') %>%
+  str_replace('distrail walk', 'Has Rail Access Walk') %>%
+  # CBSA
+  str_replace('cbsa 41860', 'CBSA: San Francisco/Oakland') %>% 
+  str_replace('cbsa 40900', 'CBSA: Sacramento') %>% 
+  str_replace('cbsa 31080', 'CBSA: Los Angeles/Orange Co.') %>% 
+  str_replace('cbsa 40140', 'CBSA: Riverside') %>% 
+  str_replace('cbsa 41940', 'CBSA: San Jose') %>% 
+  str_replace('cbsa 41740', 'CBSA: San Diego') %>%
+  I()
+new_names <- set_names(names(coef(model21)), new_names)  
+new_names
+
+model21%>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+```
+
+#### 21 - Setup Plotting DF
+```{r model21-coef-plot}
+# Create Plotting DF
+model21.pltdf <- 
+  model21 %>%
+  tidy_tobit_model() %>% 
+  # Add Stars
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names), new_names)[v]), v, set_names(names(new_names), new_names)[v]),
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]), # <- first try just splitting on :
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Education','Race','Ethnicity','Sex','CBSA','Home') ~ grp,
+                    grp %in% c('# Young Children','HH-Size', 'Has Young Children') ~ 'Family',
+                    grp %in% c('(Intercept)', 'Log(scale)') ~ 'Model',
+                    .default = 'Built-Env.'),
+    grp = factor(grp, levels = c('Built-Env.','Model','Race','Ethnicity','Sex', 'Age','HH-Income','Education','Family','Home','CBSA'))
+  ) %>%
+  select(grp, everything())
+
+# Add in means and sds
+var_summaries.21 <- 
+  # Calculate mean and sd from the scaled table
+  df.modeling21.dummies %>%
+  select(-id, -vmt) %>%
+  summarize(across(
+    where(is.numeric),
+    .fns = c('mean' = mean, 'sd' = sd),
+    .names = '{.col}_____{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '_____', names_to = c('col', 'name')) %>%
+  pivot_wider() %>%
+  # Now grabt he prescaled values from the scalar df
+  left_join(
+    df.scalars.21,
+    by = c('col'='col'),
+    suffix = c('', '.prescaled')
+  ) %>%
+  mutate(
+    # Here coalesce takes the prescaled value where it exists
+    mean = coalesce(mean.prescaled, mean),
+    sd = coalesce(sd.prescaled, sd)
+  ) %>%
+  select(-ends_with('.prescaled'))
+  
+# Now add the scaled data as additional columns
+model21.pltdf <-
+  model21.pltdf %>%
+  left_join(
+    var_summaries.21,
+    by = c('v' = 'col')
+  )
+
+# Sort the Built-Env groups by distance band
+BLOCK_GROUP_SENTINEL_VALUE <- '.001'
+model21.pltdf$dist_band<- model21.pltdf$Term %>%
+  str_replace('\\(bg\\)', paste0('(', BLOCK_GROUP_SENTINEL_VALUE, 'mi)')) %>%
+  str_extract( '\\([^\\d]*(\\d+)[^\\d]*\\)') %>%
+  str_replace('mi\\)','') %>%
+  str_replace('\\(', '') %>%
+  as.numeric()
+model21.pltdf <- 
+  model21.pltdf %>%
+  arrange(grp, desc(dist_band))
+
+# Join in VIF
+vif.21 <- tibble(var = names(car::vif(model21)), vif=car::vif(model21))
+
+model21.pltdf <-
+  model21.pltdf %>%
+  left_join(
+    vif.21,
+    'by' = c('v' = 'var')
+  )
+
+model21.pltdf
+```
+
+#### 21 - Set Default Value
+```{r model21 set default-vals}
+model21.pltdf.test <- 
+  model21.pltdf %>% 
+    mutate(default_val = case_when(grp == 'Built-Env.' ~ '', grp == 'Ethnicity' ~ 'Non-Hispanic', grp == 'Sex' ~ "Female", grp %in% c('Age','HH-Income','Education') ~ "Not Missing", grp == 'Race' ~ "White", .default = "Other")) %>% 
+    mutate(default_val = if_else(default_val == '', 'N/A', paste0('[', default_val,']'))) %>% 
+  select(grp, v, Term, default_val, everything())
+    
+```
+
+### 21 - Visualize
+```{r model21 all-std-viz}
+# VIF Plot
+plot_vif(model21.pltdf.test, title = 'Model 21: VIF')
+
+# Corrplot
+BE_vars.21.names <- set_names(
+  model21.pltdf[model21.pltdf$grp == 'Built-Env.', ]$v,
+  model21.pltdf[model21.pltdf$grp == 'Built-Env.', ]$Term 
+)
+plot_corrplot(df.modeling21.dummies, vars_named = BE_vars.21.names, title = 'Model 21: CorrPlot')
+
+# Coefs
+plot_regression_coefs(model21.pltdf.test %>% filter(grp != 'Model'), title = 'Model 21: Regression Coefficients (full model)')# + 
+model21.pltdf.test %>% 
+  filter(Term != 'JobsWithin45_Car') %>%
+  mutate(
+    default_val = str_replace(default_val, 'Default:\n','')
+  ) %>% 
+  plot_regression_coefs(remove_missing_flags = TRUE) + 
+  theme(
+    strip.text = element_text(size = 14),
+    panel.text = element_text(size = 14)
+  )
+
+# BE-Coefs
+model21.pltdf.test %>%
+    filter(Term != 'JobsWithin45_Car') %>%
+    #filter(!str_detect(Term, 'Missing')) %>%
+    #filter(p.value < .1) %>%
+  mutate(grp2 = case_when(is.na(dist_band) ~ 'Other',
+                          dist_band == as.numeric(BLOCK_GROUP_SENTINEL_VALUE) ~ 'Block Grp',
+                          .default = paste0(scales::number(dist_band, accuracy=.01),'mi')
+                )) %>%
+  filter(grp == 'Built-Env.') %>%
+  mutate(grp = factor(grp2, c('2.00mi', '1.00mi','0.75mi','0.5mi','0.375mi','0.25mi','Block Grp','Other'))) %>%
+plot_regression_coefs(hide_nonprimary_grps = FALSE, display_summaries = FALSE, add_labels=TRUE, add_demarcation_lines = FALSE, add_column_headers = FALSE, title='Model 21 - Coefs (BE)') +
+    facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+    theme(axis.text.y = element_text(size=14))
+```
+
+
+
+Now Build Model 22
+# Model 22
+Rebuild Model 19but ensure its the exact same variable set
+
+```{r model22 modeling setup}
+demo_controls.22 <- c(demo_controls, 'cbsa')
+demo_controls.22$sex <- 'sex'
+demo_controls.22[[8]] <- 'has_youngchildren' # create
+
+MAJOR_CBSAS <- c(40900, 31080, 41740, 41860, 40140, 41940)
+
+BE_vars.22 <- c('PopDens_two', 'RetDens_bg', 'distrail_walk_quarter', 'distrail_walk_one', 'NumBusStops_one', 'NetLoadDens_OX24_two', 'JobsWi45_transit_to_car_ratio',
+                'JobsWithin45_Car', 
+                'StreetDens_OX24_two', 'Missing_StreetDens_OX24_two'
+                #'IntersectionDens_OX24_two', 'Missing_IntersectionDens_OX24_two',
+            )
+
+df.modeling22 <- 
+  df.clean %>% 
+  filter(
+    vmt < 300 # , # 109
+    #age_OE___NotMissing == 1, #119
+    #homeown != 'Missing' # 136
+  ) %>%
+  mutate(
+    # New Cols
+    JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car,
+    has_youngchildren = if_else(youngchildren > 0, 1, 0),
+    #PopDens_two = PopDens_two/1000,
+    cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, cbsa_code, 'Other'),
+    major_cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, 'major', 'minor')
+  ) %>%
+  select(
+    id,
+    !!dv,
+    !!!BE_vars.22,
+    !!!demo_controls.22
+  ) %>%
+  #select(-age_OE___NotMissing) %>%
+  # Fix it so that Missing is a separate category for HH-Income, Education
+  mutate(
+    hhincome___Missing = abs(1 - hhincome_OE___NotMissing),
+    education___Missing = abs(1 - education_OE___NotMissing),
+    age___Missing = abs(1 - age_OE___NotMissing),
+  ) %>%
+  select(-hhincome_OE___NotMissing, -education_OE___NotMissing, -age_OE___NotMissing)
+
+# So we want to instead of including Missing as a first value, we want to set an additional flag for 'Missing' and then 
+
+# Save scaling values and summaries
+df.scalars.22 <- 
+  df.modeling22 %>% 
+  select(!!!BE_vars.22) %>%
+  summarize(across(
+    everything(), 
+    .fns = c('mean' = mean, 'sd' = sd, 'quartile1' = \(x) quantile(x, .25), 'median' = median, 'quartile3' = \(x) quantile(x, .75)),
+    .names = '{.col}___{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '___', names_to = c('col', 'name')) %>%
+  pivot_wider()
+
+```
+
+#### 22 - Add Interaction terms
+```{r model22 - add interaction terms}
+# Add Interaction terms
+get_summary_val <- function(var, metric, summary_tbl) {
+  summary_tbl[[which(summary_tbl$col == var), metric]]
+}
+
+col_name_to_add <- 'loadDens_X_RetDens_above_med'
+BE_vars.22 <- c(BE_vars.22, col_name_to_add)
+df.modeling22[[col_name_to_add]] <- if_else(
+    (df.modeling22$NetLoadDens_OX24_two > get_summary_val('NetLoadDens_OX24_two', 'median', df.scalars.22)) &
+      (df.modeling22$RetDens_bg > get_summary_val('RetDens_bg', 'median', df.scalars.22)),
+    1,0)
+```
+
+#### 22 - Scaling
+```{r model22 - scaling}
+# Now Scale the BE-cols
+BE_vars.22.to_scale <- c('PopDens_two', 'RetDens_bg', 'NetLoadDens_OX24_two', 'StreetDens_OX24_two','JobsWi45_transit_to_car_ratio', 'NumBusStops_one')
+
+stopifnot(all(BE_vars.22.to_scale %in% BE_vars.22))
+
+df.modeling22 <- 
+  df.modeling22 %>%
+  mutate(across(
+    !!BE_vars.21.to_scale,
+    \(x) scale(x)[,1]
+  ))
+```
+
+#### 22 - Model Setup & Run
+```{r model22 model setup}
+# dummify
+library(fastDummies)
+df.modeling22.dummies <- dummy_cols(df.modeling22, remove_selected_columns = TRUE, remove_most_frequent_dummy = FALSE)
+
+names22 <- df.modeling22.dummies %>% names()
+
+# formula
+# Set Vars
+vars_to_remove_22 <- c('cbsa_Other', 'race_White', 'homeown_Own', 'sex_Female', 'ethnicity_Non-Hispanic', 'hhincome___Missing')
+vars22 <- names22[3:length(names22)]
+vars22 <- vars22[vars22 %notin% vars_to_remove_22]
+
+form22 <- as.formula(paste(dv, '~', paste0(vars22, collapse='+')))
+
+# Model
+model22 <- AER::tobit(form22, left=0, data=df.modeling22.dummies)
+
+summary(model22)
+which(is.na(coef(model22))) # <- test for aliasing
+
+
+model22 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model22_raw.csv')
+```
+
+
+
+### 22 - Analyze/Visualize Prep
+
+#### 22 - Set Variable Titles 
+```{r model22 - analyze}
+new_names <- 
+  names(coef(model22)) %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('hhincome___', 'HH-Income: ') %>%
+  str_replace('education_OE___', 'Education: ') %>%
+  str_replace('education___', 'Education: ') %>%
+  str_replace('age___', 'Age:') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('ethnicity', 'Ethnicity:') %>%
+  str_replace('homeown', 'Home:') %>%
+  str_replace('AI_Other_Multiple', 'AI/Other/Multiple') %>%
+  str_replace('sex', 'Sex:') %>%
+  # Constructed Vars
+  str_replace('JobsWi45_transit_to_car_ratio', 'Jobs w/i 45min (transit to car)') %>%
+  str_replace('loadDens_X_RetDens_above_med', 'LoadDens X RetDens > med') %>%
+  str_replace_all('_', ' ') %>%
+  #str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  # Other
+  str_replace('youngchildren TRUE', 'Has Young Children') %>%
+  str_replace('^has youngchildren$', 'Has Young Children') %>%
+  str_replace('^youngchildren$', '# Young Children') %>%
+  str_replace('distrail walk', 'Has Rail Access Walk') %>%
+  # CBSA
+  str_replace('cbsa 41860', 'CBSA: San Francisco/Oakland') %>% 
+  str_replace('cbsa 40900', 'CBSA: Sacramento') %>% 
+  str_replace('cbsa 31080', 'CBSA: Los Angeles/Orange Co.') %>% 
+  str_replace('cbsa 40140', 'CBSA: Riverside') %>% 
+  str_replace('cbsa 41940', 'CBSA: San Jose') %>% 
+  str_replace('cbsa 41740', 'CBSA: San Diego') %>%
+  I()
+new_names <- set_names(names(coef(model22)), new_names)  
+new_names
+
+model22 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+```
+
+#### 22 - Setup Plotting DF
+```{r model22-coef-plot}
+# Create Plotting DF
+model22.pltdf <- 
+  model22 %>%
+  tidy_tobit_model() %>% 
+  # Add Stars
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names), new_names)[v]), v, set_names(names(new_names), new_names)[v]),
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]), # <- first try just splitting on :
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Education','Race','Ethnicity','Sex','CBSA','Home') ~ grp,
+                    grp %in% c('# Young Children','HH-Size', 'Has Young Children') ~ 'Family',
+                    grp %in% c('(Intercept)', 'Log(scale)') ~ 'Model',
+                    .default = 'Built-Env.'),
+    grp = factor(grp, levels = c('Built-Env.','Model','Race','Ethnicity','Sex', 'Age','HH-Income','Education','Family','Home','CBSA'))
+  ) %>%
+  select(grp, everything())
+
+# Add in means and sds
+var_summaries.22 <- 
+  # Calculate mean and sd from the scaled table
+  df.modeling22.dummies %>%
+  select(-id, -vmt) %>%
+  summarize(across(
+    where(is.numeric),
+    .fns = c('mean' = mean, 'sd' = sd),
+    .names = '{.col}_____{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '_____', names_to = c('col', 'name')) %>%
+  pivot_wider() %>%
+  # Now grabt he prescaled values from the scalar df
+  left_join(
+    df.scalars.21,
+    by = c('col'='col'),
+    suffix = c('', '.prescaled')
+  ) %>%
+  mutate(
+    # Here coalesce takes the prescaled value where it exists
+    mean = coalesce(mean.prescaled, mean),
+    sd = coalesce(sd.prescaled, sd)
+  ) %>%
+  select(-ends_with('.prescaled'))
+  
+# Now add the scaled data as additional columns
+model22.pltdf <-
+  model22.pltdf %>%
+  left_join(
+    var_summaries.22,
+    by = c('v' = 'col')
+  )
+
+# Create and sort the Built-Env groups by distance band
+BLOCK_GROUP_SENTINEL_VALUE <- '.001'
+model22.pltdf$dist_band<- model22.pltdf$Term %>%
+  str_replace('\\(bg\\)', paste0('(', BLOCK_GROUP_SENTINEL_VALUE, 'mi)')) %>%
+  str_extract( '\\([^\\d]*(\\d+)[^\\d]*\\)') %>%
+  str_replace('mi\\)','') %>%
+  str_replace('\\(', '') %>%
+  as.numeric()
+model22.pltdf <- 
+  model22.pltdf %>%
+  arrange(grp, desc(dist_band))
+
+# Join in VIF
+vif.22 <- tibble(var = names(car::vif(model22)), vif=car::vif(model22))
+
+model22.pltdf <-
+  model22.pltdf %>%
+  left_join(
+    vif.22,
+    'by' = c('v' = 'var')
+  )
+
+# Confirm all joined correctly
+
+model22.pltdf
+```
+
+#### 22 - Set Default Value
+```{r model22 set default-vals}
+model22.pltdf.test <- 
+  model22.pltdf %>% 
+    mutate(default_val = case_when(grp == 'Built-Env.' ~ '', grp == 'Ethnicity' ~ 'Non-Hispanic', grp == 'Sex' ~ "Female", grp %in% c('Age','HH-Income','Education') ~ "Not Missing", grp == 'Race' ~ "White", .default = "Other")) %>% 
+    mutate(default_val = if_else(default_val == '', 'N/A', paste0('[', default_val,']'))) %>% 
+  select(grp, v, Term, default_val, everything())
+    
+```
+
+### 22 - Visualize
+```{r model22 all-std-viz}
+# VIF Plot
+plot_vif(model22.pltdf.test, title = 'Model 22: VIF')
+
+# Corrplot
+BE_vars.22.names <- set_names(
+  model22.pltdf[model21.pltdf$grp == 'Built-Env.', ]$v,
+  model22.pltdf[model21.pltdf$grp == 'Built-Env.', ]$Term 
+)
+plot_corrplot(df.modeling22.dummies, vars_named = BE_vars.22.names, title = 'Model 22: CorrPlot')
+
+# Coefs
+plot_regression_coefs(model22.pltdf.test %>% filter(grp != 'Model'), title = 'Model 22: Regression Coefficients (full model)')# + 
+model22.pltdf.test %>% 
+  filter(Term != 'JobsWithin45_Car') %>%
+  mutate(
+    default_val = str_replace(default_val, 'Default:\n','')
+  ) %>% 
+  plot_regression_coefs(remove_missing_flags = TRUE) + 
+  theme(
+    strip.text = element_text(size = 14),
+    panel.text = element_text(size = 14)
+  )
+
+# BE-Coefs
+model22.pltdf.test %>%
+    filter(Term != 'JobsWithin45_Car') %>%
+    #filter(!str_detect(Term, 'Missing')) %>%
+    #filter(p.value < .1) %>%
+  mutate(grp2 = case_when(is.na(dist_band) ~ 'Other',
+                          dist_band == as.numeric(BLOCK_GROUP_SENTINEL_VALUE) ~ 'Block Grp',
+                          .default = paste0(scales::number(dist_band, accuracy=.01),'mi')
+                )) %>%
+  filter(grp == 'Built-Env.') %>%
+  mutate(grp = factor(grp2, c('2.00mi', '1.00mi','0.75mi','0.5mi','0.375mi','0.25mi','Block Grp','Other'))) %>%
+plot_regression_coefs(hide_nonprimary_grps = FALSE, display_summaries = FALSE, add_labels=TRUE, add_demarcation_lines = FALSE, add_column_headers = FALSE, title='Model 21 - Coefs (BE)') +
+    facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+    theme(axis.text.y = element_text(size=14))
+```
+
+
+# Compare all together
+```{r. compare}
+model20.pltdf.test %>%
+  anti_join(
+    model21.pltdf.test,
+    by = 'v'
+  ) %>%
+  anti_join(
+    model22.pltdf.test,
+    by = 'v'
+  ) # only hhincome-missing
+
+
+model22.pltdf.test %>%
+  filter(grp == 'Built-Env.') %>%
+  rename(p_value = p.value) %>%
+  inner_join(
+    model20.pltdf.test %>%
+      filter(grp == 'Built-Env.') %>%
+      rename(p_value = p.value),
+    by = 'v',
+    suffix = c('.full', '.under75k')
+  ) %>%
+  inner_join(
+     model21.pltdf.test %>%
+      filter(grp == 'Built-Env.') %>%
+      rename(p_value = p.value) %>%
+      rename_with(\(x) paste0(x, '.over75k')),
+    by = c('v' = 'v.over75k'),
+    suffix = c('', '.over75k')
+  ) %>%
+  select(grp = grp.full, v, Term = Term.full, dist_band = dist_band.full,
+         starts_with('estimate'), starts_with('p_value')) %>%
+  pivot_longer(cols = c(starts_with('estimate'), starts_with('p_value')), names_sep = '\\.', names_to = c('col', 'model')) %>%
+  pivot_wider(names_from = 'col') %>%
+  mutate(
+    signif_stars = 
+      symnum(p_value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p_value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    )
+  ) %>%
+  mutate(grp2 = case_when(is.na(dist_band) ~ 'Other',
+                          dist_band == as.numeric(BLOCK_GROUP_SENTINEL_VALUE) ~ 'Block Grp',
+                          .default = paste0(scales::number(dist_band),'mi')
+                )) %>%
+  mutate(grp = factor(grp2, c('2.00mi', '1.00mi','0.75mi','0.5mi','0.375mi','0.25mi','Block Grp','Other'))) %>% 
+  filter(!str_detect(Term, '^Missing')) %>%
+  ggplot(aes(x = estimate, y = as_factor(Term), grp = model, color = model, fill = signif_level, label = signif_stars)) + 
+  geom_bar(stat = 'identity', position='dodge', linewidth = 1) + 
+  scale_x_continuous(limits = c(-4, 4)) + 
+  scale_color_manual(values = c(full = 'olivedrab4', under75k = 'tomato1', over75k = 'goldenrod2')) + 
+  scale_fill_manual(values = set_names(
+      c(colorRampPalette(c('#efefef', 'dodgerblue3'))(4), 'dodgerblue4'), 
+      rev(paste0('<' , tail(p_cutpoints, -1))))) + 
+  labs(
+    title = 'BE Coefficients: Comparing Models',
+    color = 'Model',
+    fill = 'Signif.\nLevel',
+    y = NULL,
+  ) + 
+  #geom_text(position = 'dodge', color = 'grey22', size = 12) + 
+  facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+  theme(
+    strip.placement = 'outside',
+    strip.clip='off',
+    strip.switch.pad.wrap = unit(1,'in'),
+    strip.text.y.left = element_text(angle=0, hjust=0),
+    strip.background.y = element_rect(color='grey33', linewidth=.33),
+    panel.spacing.y = unit(.05, 'in'), 
+    panel.border = element_rect(color='gray33', fill=NA, linetype=1,linewidth = unit(.5, 'in'))
+  )
+
+```
+
+```{r}
+
+df.clean %>% 
+  group_by(hhincome = if_else(hhincome_OE____75k_and_up == 1, 'over75k', 'under75k')) %>% 
+  summarize(
+    n=n(), 
+    qmi = sum(distrail_walk_quarter)/n(), 
+    halfmi = sum(distrail_walk_half)/n(), 
+    `1mi` = sum(distrail_walk_one)/n(),
+    avg_rail_dist = mean(distrail_walk_raw)
+  ) %>%
+  select(-avg_rail_dist) %>%
+  pivot_longer(cols = -c(hhincome,n)) %>%
+  ggplot(aes(fill = hhincome, group = fct_rev(as_factor(hhincome)), y = value, x = as_factor(name))) + 
+  geom_bar(stat='identity', position = 'dodge') + 
+  scale_fill_manual(values = c(full = 'olivedrab4', under75k = 'tomato1', over75k = 'goldenrod2')) + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  labs(
+    fill = 'Income Group',
+    x = 'Distance Band',
+    y = 'Share of Population'
+  )
+
+df.clean %>% 
+  group_by(hhincome = if_else(hhincome_OE____75k_and_up == 1, 'over75k', 'under75k')) %>% 
+  summarize(
+    n=n(), 
+    avg_rail_dist = mean(distrail_walk_raw)
+  ) %>%
+  ggplot(aes(fill = hhincome, x = fct_rev(as_factor(hhincome)), y = avg_rail_dist)) + 
+  geom_bar(stat='identity', position = 'dodge') + 
+  scale_fill_manual(values = c(full = 'olivedrab4', under75k = 'tomato1', over75k = 'goldenrod2')) + 
+  labs(
+    fill = 'Income Group',
+    x = 'Income Grp',
+    y = 'Distance'
+  )
+  
+```
