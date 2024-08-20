@@ -131,7 +131,7 @@ df.scalars.27
 ```
 
 
-### 27 - Add Interaction terms
+### 27 - Add Interaction terms 
 ```{r model27 - add interaction terms}
 # This is a small helper function to make referencing the summary table from last chunk easier.
 get_summary_val <- function(var, metric, summary_tbl) {

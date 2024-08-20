@@ -262,8 +262,8 @@ new_names.28 <-
   str_replace('sex', 'Sex:') %>%
   # Constructed Vars
   str_replace('JobsWi45_transit_to_car_ratio', 'Jobs w/i 45min (transit to car)') %>%
-  str_replace('loadDens_X_RetDens_above_med', 'LoadDens & RetDens > med') %>%
-  str_replace('loadDens_X_BusStops_above_med', 'LoadDens & BusStops < Treshhold') %>%
+  str_replace('loadDens_X_RetDens_above_med', 'LoadDens & RetDens > Med') %>%
+  str_replace('loadDens_X_BusStops_below_thresh', 'LoadDens & BusStops < Treshhold') %>%
   str_replace_all('_', ' ') %>%
   #str_replace('and up', 'plus') %>%
   str_replace('\\$ ', ' $') %>%
