@@ -1,0 +1,214 @@
+---
+title: "Mapping"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r env}
+library(tidyverse)
+library(sf)
+```
+
+# Rebuild Dataset at Block-Group level
+
+```{r}
+#df.mapping.raw <- read_sf('data/mapping_files/Aggregated_BECs_V2/BEC_AggBG_V2.shp')
+df.mapping.raw <- rail_buffers_unioned.final
+
+df.mapping <- 
+  df.mapping.raw %>% 
+  rename(
+    StreetDens_GF18_bg = stdens_bg,
+    StreetDens_GF18_half = stdens_hlf,
+    StreetDens_GF18_one = stdens_one,
+    StreetDens_GF18_two = stdens_two
+  ) %>%
+  # Fix a bunch of QGIS' annyoing column name abbreviations
+  rename_with(.cols = ends_with('_hlf'), \(x) str_replace(x, '_hlf$', '_half')) %>%
+  rename_with(.cols = ends_with('_tw'), \(x) str_replace(x, '_tw$', '_two')) %>%
+  rename_with(.cols = ends_with('_on'), \(x) str_replace(x, '_on$', '_one')) %>%
+  rename_with(.cols = ends_with('_hl'), \(x) str_replace(x, '_hl$', '_half')) %>%
+  rename_with(.cols = ends_with('_t'), \(x) str_replace(x, '_t$', '_two')) %>%
+  rename_with(.cols = ends_with('_o'), \(x) str_replace(x, '_o$', '_one')) %>%
+  rename_with(.cols = ends_with('_h'), \(x) str_replace(x, '_h$', '_half')) %>%
+  rename_with(.cols = ends_with('_b'), \(x) str_replace(x, '_b$', '_bg'))
+```
+
+## Rebuild model26
+```{r}
+# Get CBSA
+sld_shp <- read_sf('data/EPA Smart Location/CaliforniaSLD.shp')
+bg2cbsa_dict <- sld_shp %>% 
+  mutate(fips5 = paste0(STATEFP, COUNTYFP)) %>%
+  select(GEOID = GEOID20, fips5, cbsa = CBSA) %>%
+  sf::st_drop_geometry()
+
+df.mapping2 <- 
+  df.mapping %>%
+  inner_join(
+    bg2cbsa_dict,
+    by = 'GEOID'
+  ) %>%
+  mutate(
+    JobsWi45_transit_to_car_ratio = D5br_bg/D5ar_bg,
+    netloaddens_2mi = (popdens_two + empdens_two)/StreetDens_GF18_two,
+    # Interactions - note: 'thresh' values from `models/model25.Rmd`
+    #loadDens_X_BusStops_below_thresh = if_else((netloaddens_2mi < thresh.NetLoad) & (NumBusStops_one < thresh.NumBusStops), 1,0),
+    loadDens_X_RetDens_above_med = if_else(
+      (netloaddens_2mi > get_summary_val('NetLoadDens_GF18_two', 'median', df.scalars.28)) &
+        (retdens_bg > get_summary_val('RetDens_bg', 'median', df.scalars.28)),
+      1,0)
+) %>%
+  rename(
+    PopDens_two = popdens_two,
+    RetDens_bg = retdens_bg,
+    NetLoadDens_GF18_two = netloaddens_2mi
+  )
+
+
+# Note: num-bus-stops, dist2rail are all missing and going to just be interpolated as the median
+median_vals <- 
+  df.modeling28.dummies %>% 
+  summarize(
+    across(-c(id, vmt), 
+           median)
+    )
+
+# Need to move distrail_buffers into distrail_walks
+df.mapping2 <-
+  df.mapping2 %>%
+  select(
+    everything(),
+    distrail_walk_one = distrail_buffer_one,
+    distrail_walk_quarter = distrail_buffer_quarter
+  )
+
+for(col in names(median_vals)) {
+  if(col %notin% names(df.mapping2)) {
+    df.mapping2[[col]] <- median_vals[[col]]
+  }
+}
+
+dir.create('models/model28/mapping')
+df.mapping2 %>% write_sf('models/model28/mapping/mapping28_raw.shp')
+
+```
+
+
+## Scale, predict and map
+```{r scale-vars}
+df.mapping3 <- 
+  df.mapping2 %>%
+  mutate(across(
+    !!BE_vars.28.to_scale,
+    function(x) {
+       (x - get_summary_val(cur_column(), 'mean', df.scalars.28))/get_summary_val(cur_column(), 'sd', df.scalars.28)
+    }
+  )) %>%
+  # Fix cbsa
+  mutate(
+    cbsa_SAC == if_else(cbsa == 40900, 1, 0),
+    cbsa_LA_OC == if_else(cbsa == 31080, 1, 0),
+    cbsa_SD == if_else(cbsa == 41740, 1, 0),
+    cbsa_SF_OAK == if_else(cbsa == 41860, 1, 0),
+    cbsa_IE == if_else(cbsa == 40140, 1, 0),
+    cbsa_SJ == if_else(cbsa == 40940, 1, 0)
+  ) %>%
+  select(
+    GEOID, fips5, cbsa,
+    tail(names(df.modeling28.dummies), -2)
+  )
+
+#df.mapping3 %>% View()
+
+# Predict
+df.mapping3$pred_vmt <- predict(model.28, df.mapping3)
+
+
+df.mapping3 %>%
+  st_drop_geometry() %>%
+  filter(!is.infinite(pred_vmt) & !is.nan(pred_vmt)) %>%
+  mutate(bin_pred_vmt = floor(pred_vmt)) %>%
+  group_by(bin_pred_vmt) %>%
+  summarize(n())
+
+# Check for infinite values
+df.mapping3 %>% 
+  st_drop_geometry() %>% # Need to convert back to a normal dataframe
+  select(where(\(x) any(is.infinite(x)))) %>% 
+  filter(is.infinite(JobsWi45_transit_to_car_ratio))
+
+
+# There are a bunch of impossible values
+df.mapping3 %>%
+  filter(!is.infinite(pred_vmt) & !is.nan(pred_vmt)) %>%
+  st_drop_geometry() %>%
+  mutate(bin_pred_vmt = floor(pred_vmt)) %>%
+  group_by(bin_pred_vmt) %>%
+  summarize(n = n()) %>%
+  arrange(desc(bin_pred_vmt))
+
+df.mapping3 %>%
+  filter(pred_vmt > 1000)
+```
+
+```{r producing a map}
+df.mapping3 %>%
+  filter(!is.infinite(pred_vmt) & !is.nan(pred_vmt)) %>%
+  st_drop_geometry() %>%
+  ggplot(aes(x=))
+
+mean_vmt <- 17.10475
+
+df.mapping3 %>%
+  filter(!is.infinite(pred_vmt) & !is.nan(pred_vmt)) %>%
+  filter((pred_vmt > 0), (pred_vmt < 100)) %>%
+  #filter(substr(GEOID, 1, 5) %in% c('06001', '06013', '06075', '06081','06041')) %>%
+  filter(substr(GEOID, 1, 5) %in% c('06001')) %>% #, '06013', '06075', '06081','06041')) %>%
+  ggplot(aes(fill = pred_vmt - mean_vmt)) +
+  geom_sf() + 
+  scale_fill_gradient2(low = 'firebrick4', high = 'dodgerblue4', midpoint = 0, mid = '#efefef', breaks = c(-20, 0, 10, 20, 30, 100)) + 
+  #coord_sf(xlim = c(-122.53, -122.05), ylim = c(37.6, 37.9)) + 
+    coord_sf(xlim = c(-122.4, -122.05), ylim = c(37.7, 37.9)) + 
+  labs(
+    fill = 'Change in VMT\n(compared to Median)'
+  )
+
+# Make change column
+df.mapping3 %>% write_sf('models/model28/mapping/mapping28_final.shp')
+
+df.mapping3 %>% 
+  ggplot(aes(x = pred_vmt)) + 
+  scale_x_continuous(limits = c(-20, 20)) + 
+  geom_histogram(bins = 40)
+
+df.mapping3 %>%
+  select(any_of(names(coef(model.26))))
+
+
+df.mapping3 %>% View()
+
+# Predict for each scenario
+df.mapping3$p_vmt_qmi_noBus <- predict(model.26, 
+                                       df.mapping3 %>% 
+                                         mutate(distrail_walk_quarter = 1, distrail_walk_one = 1, NumBusStops_one = 0)
+                                       )
+df.mapping3$p_vmt_one_noBus <- predict(model.26, df.mapping3 %>% mutate(distrail_walk_quarter = 0, distrail_walk_one = 1, NumBusStops_one = 0))
+df.mapping3$p_vmt_noRail_noBus <- predict(model.26, df.mapping3 %>% mutate(distrail_walk_quarter = 0, distrail_walk_one = 0, NumBusStops_one = 0))
+
+df.mapping3$p_vmt_qmi_Bus <- predict(model.26, df.mapping3 %>% mutate(distrail_walk_quarter = 1, distrail_walk_one = 1, NumBusStops_one = 1))
+df.mapping3$p_vmt_one_Bus <- predict(model.26, df.mapping3 %>% mutate(distrail_walk_quarter = 0, distrail_walk_one = 1, NumBusStops_one = 1))
+df.mapping3$p_vmt_noRail_Bus <- predict(model.26, df.mapping3 %>% mutate(distrail_walk_quarter = 0, distrail_walk_one = 0, NumBusStops_one = 1))
+
+```
+
+
+```{r}
+
+problem_geoid <- '060014081004'
+
+df.modeling28 %>% filter(GEOID = 060014081004)
+
+```

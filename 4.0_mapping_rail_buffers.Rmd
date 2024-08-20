@@ -1,0 +1,131 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+This script is the final portion of the data-wrangling that creates the quarter- and 1-mile buffer zones around rail stations and unions it with Block Groups to make these spatial metrics mappable.
+
+This was run after the real geoprocessing was run manually in QGIS.
+
+```{r}
+bec.v2 <- read_sf('data/mapping_files/Aggregated_BECs_V2/')
+bec.v2
+
+#rail_stations <- read_sf('data/mapping_files/Filtered Rail Stations/')
+
+# Run buffer in 
+rail_buffers_unioned <- read_sf('data/mapping_files/unioned_buffers/')
+
+rail_buffers_unioned.slim <- 
+  rail_buffers_unioned %>% 
+  select(GEOID, starts_with('JoinBin'))
+
+nrow(rail_buffers_unioned.slim) # 189,512
+sum(rail_buffers_unioned.slim$JoinBinary, na.rm=T) # 169,193
+sum(rail_buffers_unioned.slim$JoinBina_1, na.rm=T) # 145,903
+
+
+# Figure out which of JoinBinary and JoinBina_1 are which
+rail_buffers_unioned.slim %>%
+  # Filter to only Alameda County
+  filter(substr(GEOID, 1, 5) == '06001') %>%
+  ggplot(aes(fill=JoinBina_1)) +
+  geom_sf() + 
+  # Clip it to only inner Alameda (Berk/non-East Oakland)
+  coord_sf(xlim = c(-122.35, -122.2), ylim = c(37.7, 37.9)) # joinBina_1 = qmi
+
+
+rail_buffers_unioned.slim %>%
+  filter(substr(GEOID, 1, 5) == '06001') %>% 
+  ggplot(aes(fill=JoinBinary)) +
+  geom_sf() + 
+  coord_sf(xlim = c(-122.35, -122.2), ylim = c(37.7, 37.9)) # joinBinary = 1mi
+  
+  
+# Both columns are either NA or 1 so I want to just use `replace_na` with 0
+
+# Now what about missing GEOIDs??
+
+rail_buffers_unioned.slim %>%
+  filter(is.na(GEOID)) # there are only 31???
+
+nrow(rail_buffers_unioned.slim) # 189,512
+length(rail_buffers_unioned.slim$GEOID) # 189,512
+sum(!is.na(rail_buffers_unioned.slim$GEOID)) # 189,481
+
+# Let's see where the 31 are
+rail_buffers_unioned.slim %>%
+  mutate(missing_GEOID = is.na(GEOID)) %>%
+  ggplot(aes(fill=missing_GEOID)) +
+  geom_sf()
+  #coord_sf(xlim = c(-122.35, -122.2), ylim = c(37.7, 37.9))
+
+# Can't really see them on either the zoomed or full version.
+
+# Ok, I checked in QGIS, they're all just weird artifacts at the borders because the buffer borders have some sort of width to them. Ignoring
+
+rail_buffers_unioned.slim <- 
+  rail_buffers_unioned.slim %>% 
+  filter(!is.na(GEOID))
+
+
+# Fill the NAs with 0s
+rail_buffers_unioned.slim$JoinBina_1 <- replace_na(rail_buffers_unioned.slim$JoinBina_1, 0)
+rail_buffers_unioned.slim$JoinBinary <- replace_na(rail_buffers_unioned.slim$JoinBinary, 0)
+
+# Check work
+rail_buffers_unioned.slim$JoinBina_1 %>% table() # Basically same as above (but we removed the 31 nulls so shrug)
+rail_buffers_unioned.slim$JoinBinary %>% table()
+
+# Rename the cols
+rail_buffers_unioned.slim <-
+  rail_buffers_unioned.slim %>%
+  rename(
+    distrail_buffer_one = JoinBinary,
+    distrail_buffer_quarter = JoinBina_1,
+  )
+
+# Change type
+rail_buffers_unioned.slim$distrail_buffer_one <- as.integer(rail_buffers_unioned.slim$distrail_buffer_one)
+rail_buffers_unioned.slim$distrail_buffer_quarter <- as.integer(rail_buffers_unioned.slim$distrail_buffer_quarter)
+
+# Confirm that distrail_buffer_quarter is a subsert of distrail_buffer_one
+rail_buffers_unioned.slim %>% filter((distrail_buffer_one == 0) & (distrail_buffer_quarter == 1)) # 0
+rail_buffers_unioned.slim %>% filter((distrail_buffer_one == 1) & (distrail_buffer_quarter == 0)) # 23,308
+
+rail_buffers_unioned.slim %>%
+  st_drop_geometry() %>%
+  group_by(distrail_buffer_one, distrail_buffer_quarter) %>%
+  summarize(n()) # Perfect
+
+
+rail_buffers_unioned.final <- 
+  rail_buffers_unioned.slim %>%
+  mutate(
+    which_model = case_when(
+      (distrail_buffer_one == 0) & (distrail_buffer_quarter == 0) ~ 'main',
+      (distrail_buffer_one == 1) & (distrail_buffer_quarter == 1) ~ 'wi_qmi',
+      (distrail_buffer_one == 1) & (distrail_buffer_quarter == 0) ~ 'wi_1mi',
+      (distrail_buffer_one == 0) & (distrail_buffer_quarter == 1) ~ 'ERROR',
+      .default = 'ERROR2'
+    )
+  ) %>%
+  select(GEOID, distrail_buffer_one, distrail_buffer_quarter, which_model, geometry)
+  
+
+```
+
+Now we need to join back in all the geographic summaries at the BG level
+```{r}
+rail_buffers_unioned.final <- 
+  rail_buffers_unioned.final %>%
+  inner_join(
+    st_drop_geometry(bec.v2),
+    by = 'GEOID'
+  )
+
+rail_buffers_unioned.final
+
+```
