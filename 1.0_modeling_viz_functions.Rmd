@@ -145,7 +145,7 @@ plot_regression_coefs <- function(plotdf, title = NULL, hide_nonprimary_grps = F
   max_coef <- max(abs(df.plt$estimate))
   
   # Function to format facets
-  n_grps <- length(unique(model19.pltdf.test$grp)) + if_else(add_column_headers, 1, 0)
+  n_grps <- length(unique(plotdf$grp)) + if_else(add_column_headers, 1, 0)
   facet_formatter <- function(x) {
       if((add_column_headers) && (x %% n_grps == 1)) {
         # this is for the colun headers
