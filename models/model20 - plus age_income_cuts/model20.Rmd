@@ -733,7 +733,7 @@ plot_regression_coefs(hide_nonprimary_grps = FALSE, display_summaries = FALSE, a
 
 Now Build Model 22
 # Model 22
-Rebuild Model 19but ensure its the exact same variable set
+Rebuild Model 19 but ensure its the exact same variable set
 
 ```{r model22 modeling setup}
 demo_controls.22 <- c(demo_controls, 'cbsa')

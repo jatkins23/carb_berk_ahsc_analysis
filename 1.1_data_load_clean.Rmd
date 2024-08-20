@@ -1,0 +1,629 @@
+---
+title: "CARB Project Modeling (1.0)"
+subtitle: 'Background'
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+# Intro
+This is modeling for the CARB AHSC Analysis Project.
+We are starting from scratch for clarity and so that it can be replicated in the future.
+
+```{r env}
+library(tidyverse)
+```
+
+# Data Load/Exploration
+```{r Load Data Update}
+data.v6 <- read_csv('data/DataforExport_V6.csv')
+data.v6 %>% names() %>%
+  sapply(function(x) x %in% names(data.bak)) %>%
+  summary()
+
+# Add rownumbers as id
+data.v6 <- data.v6 %>% 
+  mutate(id = row_number()) %>% 
+  select(id, everything())
+
+data <- data.v6
+
+# Load CBSA dictionary for future use
+cbsa_codes <- read_csv('../data/cbsa2fipsxw.csv')
+cbsa_code_dict <- cbsa_codes %>% distinct(cbsacode, cbsatitle)
+
+# create new dataframe
+df.clean <- tibble(data.frame(id = data$id, vmt = data$daily_vmt, veh_trips = data$num_privatevehicle_trips))
+df.clean
+```
+
+
+Define DVs
+```{r}
+# We're most likely gonna just use `daily_vmt`, but could to have
+dvs <- c(
+  'daily_vmt', 
+  'num_trips', 
+  'num_privatevehicle_trips', 
+  'num_publictransit_trips', 
+  'num_walk_trips', 
+  'num_bike_trips', 
+  'walk_trip_dist', 
+  'walk_trip_dur'
+)
+
+dv <- dv[1]
+
+```
+
+# Data Assembly/Cleaning
+
+## Demos - Standard Columns (Clean)
+
+### `HH_Income`
+```{r clean HH_Income}
+# `hhincome_updated`
+data$hhincome_updated %>% unique()
+# data %>% select(!!var_list)
+
+# Let's prepend a _ to the ones that need it 
+income_dictionary <- 
+  c(
+  '1: Less than $10,000'    = '01: $00_to_09k',
+  '2: $10,000 to $14,999'   = '02: $10_to_14k',
+  '3: $15,000 to $24,999'   = '03: $15_to_24k',
+  '4: $25,000 to $34,999'   = '04: $25_to_34k',
+  '5: $35,000 to $49,999'   = '05: $35_to_49k',
+  '6: $50,000 to $74,999'   = '06: $50_to_74k',
+  '7: $75,000 to $99,999'   = '07: $75_to_99k',
+  '8: $100,000 to $124,999' = '08: $100_to_124k',
+  '9: $125,000 to $149,999' = '09: $125_to_149k',
+  '10:$150,000 to $199,999' = '10: $150_to_199k',
+  '11: $200,000 or more'    = '11: $200k_and_up',
+  '12: Missing Data'        = '12: Missing Data'
+  )
+
+## Assign Income Cats
+df.clean$hhincome_cat <- income_dictionary[data$hhincome_updated]
+
+## Factorize
+# str_split_fixed(df.clean$hhincome_cat, ':', 2)[,1] %>% as.numeric()
+
+df.clean$hhincome_cat <- factor(df.clean$hhincome_cat, levels=df.clean$hhincome_cat %>% unique() %>% sort())
+
+# Value
+
+levels(df.clean$hhincome_cat)
+income_valuation <- 
+  c(
+      '01' = 5,
+      '02' = 12.5,
+      '03' = 20,
+      '04' = 30,
+      '05' = 42.5,
+      '06' = 62.5,
+      '07' = 87.5,
+      '08' = 112.5,
+      '09' = 137.5,
+      '10' = 175,
+      '11' = 250,
+      '12' = NA
+    )
+
+## Assign
+df.clean$hhincome_est <- income_valuation[substr(df.clean$hhincome_cat, 1, 2)]
+
+## Check
+
+n_total <- nrow(df.clean)
+
+df.clean %>%
+  group_by(hhincome_cat, hhincome_est) %>%
+  summarize(n = n(), `%` = n()/n_total)
+
+df.clean %>%
+  group_by(hhincome_cat) %>%
+  summarize(mean_est = mean(hhincome_est), n = n(), `%` = n()/n_total)
+
+```
+
+#### `HH_income` - Open-ended
+```{r income-OE}
+df.clean$hhincome_OE___NotMissing <- (df.clean$hhincome_cat != '12: Missing Data') %>% as.numeric()   # `as.numeric` just turns TRUE/FALSE
+df.clean$hhincome_OE____10k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 10) %>% as.numeric()
+df.clean$hhincome_OE____15k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 15) %>% as.numeric()
+df.clean$hhincome_OE____25k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 25) %>% as.numeric()
+df.clean$hhincome_OE____35k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 35) %>% as.numeric()
+df.clean$hhincome_OE____50k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 50) %>% as.numeric()
+df.clean$hhincome_OE____75k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 75) %>% as.numeric()
+df.clean$hhincome_OE___100k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 100) %>% as.numeric()
+df.clean$hhincome_OE___125k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 125) %>% as.numeric()
+df.clean$hhincome_OE___150k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 150) %>% as.numeric()
+df.clean$hhincome_OE___200k_and_up <- if_else(as.numeric(df.clean$hhincome_cat) == 12, 0, df.clean$hhincome_est > 200) %>% as.numeric()
+
+df.clean %>% 
+  select(starts_with('hhincome_OE')) %>%
+  rename_with(\(x) str_replace(x, 'hhincome_OE___', '')) %>%
+  summarize(across(everything(), 
+                   .fns = c(n = \(x) sum(x, na.rm = T), 
+                            n_NA = \(x) sum(is.na(x))), 
+                   .names = '{.col}___{.fn}')) %>% 
+  pivot_longer(everything()) %>%
+  separate(name, into = c('col', 'metric'), sep = '___') %>%
+  pivot_wider(names_from = 'metric')
+```
+
+### `Age`
+```{r clean Age}
+# Age - un-dummify
+## First confirm, all only add to 1
+data %>% 
+  select(starts_with('age_')) %>%
+  mutate(sum = rowSums(across(where(is.numeric)))) %>%
+  filter(sum != 1) # 119 people don't have age
+
+age_buckets <- 
+  data %>% 
+  select(id, starts_with('age_')) %>%
+  pivot_longer(cols=-id) %>%
+  filter(value == 1) %>%
+  mutate(name = str_replace(name, 'age_', '')) %>%
+  select(id, bucket = name)
+
+df.clean$age_bucket <- 
+  data %>% 
+  left_join(
+    age_buckets,
+    by = 'id'
+  ) %>%
+  pull(bucket)
+
+
+# Age Bucket rename
+df.clean$age_bucket %>% unique()
+df.clean$age_bucket <- df.clean$age_bucket %>% replace_na('Missing')
+df.clean$age_bucket %>% unique()
+age_bucket_dictionary <- c(
+  "under_5" = '00_to_04',
+  "5_to_14"     = '05_to_14',
+  "15_to_24"    = '15_to_24',
+  "25_to_34"    = '25_to_34',
+  "35_to_44"    = '35_to_44',
+  "45_to_54"    = '45_to_54',
+  "55_to_64"    = '55_to_64',
+  "65_to_74"    = '65_to_74',
+  "75_and_above"   = '75_and_up',
+  'Missing'     = 'Missing'
+)
+
+## Assign new dictionary
+df.clean$age_bucket <- age_bucket_dictionary[df.clean$age_bucket]
+
+## Check
+df.clean$age_bucket %>% unique() %>% sort()
+
+## Factorize - we need to factorize so the open-ended buckets will work
+df.clean$age_bucket <- factor(df.clean$age_bucket, levels = sort(unique(df.clean$age_bucket)))
+
+# Value
+age_valuation <-
+  c(
+    '00_05' = 3,
+    '05_14' = 10,
+    '15_24' = 20,
+    '25_34' = 30,
+    '35_44' = 40,
+    '45_54' = 50,
+    '55_64' = 60,
+    '65_74' = 70,
+    '75_and_up' = 82,
+    'Missing' = NA,
+    NA
+  )
+
+## Assign Valuation
+df.clean$age_est <- age_valuation[df.clean$age_bucket]
+
+## Checks
+df.clean %>%
+  group_by(age_bucket, age_est) %>%
+  summarize(n = n(), `%` = n()/n_total)
+
+df.clean %>%
+  group_by(age_bucket) %>%
+  summarize(mean(age_est)) # perfect
+```
+
+#### Age - Open-ended
+```{r age-OE}
+# Open Ended - here
+df.clean$age_OE___NotMissing <- (df.clean$age_bucket != 'Missing') %>% as.numeric() # `as.numeric` just turns TRUE/FALSE into 1/0
+df.clean$age_OE___15_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 15))
+df.clean$age_OE___25_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 25))
+df.clean$age_OE___35_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 35))
+df.clean$age_OE___45_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 45))
+df.clean$age_OE___55_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 55))
+df.clean$age_OE___65_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 65))
+df.clean$age_OE___75_and_up <- if_else(df.clean$age_bucket == 'Missing', 0, as.numeric(df.clean$age_est > 75))
+
+df.clean %>% 
+  select(starts_with('age_OE')) %>%
+  rename_with(\(x) str_replace(x, 'age_OE___', '')) %>%
+  summarize(across(everything(), .fns = c(n = \(x) sum(x, na.rm = T), n_NA = \(x) sum(is.na(x))), .names = '{.col}___{.fn}')) %>% 
+  pivot_longer(everything()) %>%
+  separate(name, into = c('col', 'metric'), sep = '___') %>%
+  pivot_wider(names_from = 'metric')
+  
+```
+
+### `Education`
+```{r clean Education}
+# Education
+data$educ_updated %>% unique()
+education_dictionary <- c(
+  "Less than a high school graduate" = 'LessThanHS',
+  "High school graduate or GED" = 'HighSchool',
+  "Some college or associates degree" = 'SomeCollege',
+  "Bachelor's degree" = 'Bachelors',
+  "Graduate degree or professional degree" = 'Graduate',
+  "Missing Data" = 'Missing'
+)
+df.clean$education <- education_dictionary[data$educ_updated]
+
+df.clean %>%
+  group_by(education) %>%
+  summarize(n = n(), `%` = n()/n_total)
+
+## Factorize 
+df.clean$education <- factor(df.clean$education, levels = c('LessThanHS', 'HighSchool', 'SomeCollege', 'Bachelors', 'Graduate', 'Missing'))
+
+levels(df.clean$education)
+```
+
+#### `Education` - Open-ended
+```{r education-OE}
+# See previous examples of `Open-Ended` for explanation
+df.clean$education_OE___NotMissing <- (df.clean$education != 'Missing') %>% as.numeric()
+df.clean$education_OE___HighSchool_and_up <- if_else(df.clean$education == 'Missing', 0, as.numeric(df.clean$education) > 1)
+df.clean$education_OE___SomeCollege_and_up <- if_else(df.clean$education == 'Missing', 0, as.numeric(df.clean$education) > 2)
+df.clean$education_OE___Bachelors_and_up <- if_else(df.clean$education == 'Missing', 0, as.numeric(df.clean$education) > 3)
+df.clean$education_OE___Graduate_and_up <- if_else(df.clean$education == 'Missing', 0, as.numeric(df.clean$education) > 4)
+
+# Test Output of the transformation
+df.clean %>% 
+  select(starts_with('education_OE')) %>%
+  rename_with(\(x) str_replace(x, 'education_OE___', '')) %>%
+  summarize(across(everything(), .fns = c(n = \(x) sum(x, na.rm = T), n_NA = \(x) sum(is.na(x))), .names = '{.col}___{.fn}')) %>% 
+  pivot_longer(everything()) %>%
+  separate(name, into = c('col', 'metric'), sep = '___') %>%
+  pivot_wider(names_from = 'metric')
+  
+```
+
+### `Race`
+```{r clean Race}
+# Race
+race_dictionary <- c(
+  'Some other race' = 'Other',
+  'Native Hawaiian or other Pacific Islander' = 'PI',
+  'American Indian or Alaska Native' = 'AI',
+  'Black or African American' = 'AfAm',
+  'Missing Data' = 'Missing',
+  'Multiple responses selected' = 'Multi',
+  'Asian' = 'Asian',
+  'White' = 'White'
+)
+
+df.clean$race <- race_dictionary[data$race_updated]
+
+## Checks
+df.clean$race %>% 
+  table()
+
+## Consolidated
+race_dictionary.consolidated <- c(
+  'Some other race' = 'AI_Other_Multiple',
+  'Native Hawaiian or other Pacific Islander' = 'AAPI',
+  'American Indian or Alaska Native' = 'AI_Other_Multiple',
+  'Black or African American' = 'AfAm',
+  'Missing Data' = 'Missing',
+  'Multiple responses selected' = 'AI_Other_Multiple',
+  'Asian' = 'AAPI',
+  'White' = 'White'
+)
+
+## Race Assigned
+df.clean$race_consolidated <- race_dictionary.consolidated[data$race_updated]
+df.clean$race_consolidated %>% table()
+
+df.clean %>%
+  group_by(race, race_consolidated) %>%
+  summarize(n = n(), `%` = n()/n_total)
+```
+
+### `Ethnicity`
+
+```{r ethnicity}
+# Run
+data %>% 
+  group_by(hisp_updated) %>% 
+  summarize(n())
+
+df.clean$ethnicity <- if_else(data$hisp_updated == 'Missing Data', 'Missing', data$hisp_updated)
+
+
+df.clean %>%
+  group_by(race, ethnicity) %>%
+  summarize(n = n(), `%` = n()/n_total)
+```
+
+
+### `Sex`/`Homeown`/`HH_size`
+```{r other}
+# Addditional remove spaces
+df.clean$homeown <- 
+  data$homeown_updated %>% 
+  str_replace_all('Missing Data', 'Missing') %>%
+  str_replace_all('Error', 'Missing')
+
+df.clean$sex <- str_replace_all(data$sex_updated, 'Missing Data', 'Missing')
+
+# Consolidation
+df.clean$sex
+df.clean$sex_consolidated <- if_else(df.clean$sex == 'Male', 'Male', 'Not_Male')
+df.clean %>% 
+  group_by(sex, sex_consolidated) %>%
+  summarize(n = n(), `%` = n()/n_total)
+
+df.clean$hhsize <- data$hhsize_updated
+```
+
+### `Youngchild`, `hhsize`
+```{r clean-other}
+data %>% names() %>% paste0(collapse='\n') %>% cat() # youngchild_updated, hh_cbsa_updated
+df.clean$youngchildren <- data$youngchild_updated
+
+count(data, hhsize_updated)
+```
+
+## Built-Environment Columns (Assembly)
+
+### Rename Cols
+```{r built-enviornment col assembly}
+names(data) %>% paste0(collapse='\n') %>% cat()
+
+BE_suffixes <- c('bg','half','one','two')
+
+data %>%
+  select(ends_with('bg')) %>%
+  names()
+  #select(ends_with(BE_suffixes))
+
+data %>%
+  select(starts_with('NumBusStops'))
+
+
+# Fix columns names -- all already renamed
+data <-
+  data %>%
+  rename(
+    StreetDens_OX24_two   = StreetDens_OX24_two_updated,
+    NetLoadDens_OX24_two  = NetLoadDens_OX24_two_updated,
+    JobsWithin45_Car      = JobsWithin45_Car_2,
+    JobsWithin45_Transit   = JobsWithin45_Transit_3,
+    distrail_car_raw       = Car_DistToRail,
+    distrail_walk_raw      = Walk_DistToRail,
+    distrail_car_eighth    = distrail_eighthmi_car,
+    distrail_car_quarter   = distrail_quartmi_car,
+    distrail_car_3eighth   = distrail_3eighthmi_car,
+    distrail_car_half      = distrail_halfmi_car,
+    distrail_car_3quarter  = distrail_3quartmi_car,
+    distrail_car_one       = distrail_onemi_car,
+    distrail_car_far       = distrail_far_car,
+    distrail_walk_eighth   = distrail_eighthmi_walk,
+    distrail_walk_quarter  = distrail_quartmi_walk,
+    distrail_walk_3eighth  = distrail_3eighthmi_walk,
+    distrail_walk_half     = distrail_halfmi_walk,
+    distrail_walk_3quarter = distrail_3quartmi_walk,
+    distrail_walk_one      = distrail_onemi_walk,
+    distrail_walk_far      = distrail_far_walk,
+    NumBusStops_bg         = NumBusStops_bg,
+    NumBusStops_quarter    = NumBusStops_quartmi,
+    NumBusStops_3eighth    = NumBusStops_3eighthmi,
+    NumBusStops_half       = NumBusStops_halfmi,
+    NumBusStops_one        = NumBusStops_onemi
+  )
+```
+
+### Standard BE Cols
+These are the BE cols with the standard suffixes
+```{r}
+BE_cols.std <- c(
+  'PopDens',
+  # Attraction Density
+  'EmpDens', 
+  'RetDens', 'EntDens', 'IndDens', 
+  'OffDens', 'SvcDens', 'HlthDens', 'EduDens', 'PubDens', 
+  # Job Wage Categories
+  #'LowWage', 'MedWage', 'HiWage',
+  # Street Network
+  'StreetDens_GF18','StreetDens_OX24', 'Missing_StreetDens_OX24',
+  'IntersectionDens_OX24', 'Missing_IntersectionDens_OX24',
+  'NetLoadDens_GF18', 'NetLoadDens_OX24'
+)
+
+
+
+# Thousand Columns
+data %>% select(ends_with('thous')) # So just `PopDens` and `EmpDens`
+
+# Check in on columns that haven't been yet used
+names(data)[!names(data) %>% sapply(\(x) (x %in% c(
+  names(df.clean),
+  data %>% select(starts_with('age')) %>% names(),
+  data %>% select(starts_with('educ')) %>% names(),
+  data %>% select(ends_with('updated')) %>% names(),
+  data %>% select(ends_with('thous')) %>% names(),
+  data %>% select(starts_with('Missing')) %>% names(),
+  # "race_updated", "sex_updated", "age_under_5", "age_5_to_14", "age_15_to_24", "age_25_to_34", "age_35_to_44", "age_45_to_54", "age_55_to_64", "age_65_to_74", "age_75_and_above", "educ_updated", 
+  # 'educ_HS_above', 'educ_AA_above', 'educ_BA_above', 'educ_MS_above',
+  # 'hh_cbsa_name', 'hhsize_updated', 'hhincome_updated', 'homeown_updated', 'youngchild_updated',
+  do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_'))
+)))] %>% 
+  paste0(collapse = "', \n'") %>% 
+  cat()
+
+# Add to df.clean
+missing_cols <- c()
+for(c in BE_cols.std) {
+  for(s in BE_suffixes) {
+    colname <- paste0(c, '_', s)
+    if(colname %in% names(data)) {
+      df.clean[colname] <- data[colname]
+    } else {
+      cat(paste(colname, 'Missing\n'))
+      missing_cols <- c(missing_cols, colname)
+    }
+  }
+}
+
+missing_cols
+```
+
+### Other BE Cols
+```{r BE_cols.other}
+data %>% select(starts_with('distrail')) %>% names() %>% paste0(collapse = "', '")
+BE_cols.other <- c(
+  # Job Accessibility
+  'JobsWithin45_Car', 
+  'JobsWithin45_Transit',
+  # Distrail - Raw
+  'distrail_car_raw',
+  'distrail_walk_raw', 
+  # Distrail - Car
+  'distrail_car_eighth', 
+  'distrail_car_quarter', 
+  'distrail_car_3eighth', 
+  'distrail_car_half', 
+  'distrail_car_3quarter', 
+  'distrail_car_one', 
+  'distrail_car_far', 
+  # Distrail - Walk
+  'distrail_walk_eighth', 
+  'distrail_walk_quarter', 
+  'distrail_walk_3eighth', 
+  'distrail_walk_half', 
+  'distrail_walk_3quarter', 
+  'distrail_walk_one',
+  'distrail_walk_far', 
+  # Num Bus Stops
+  'NumBusStops_bg',
+  'NumBusStops_quarter',
+  'NumBusStops_3eighth',
+  'NumBusStops_half',
+  'NumBusStops_one',
+  # Bus Stop Density
+  'BusStopDens_bg'
+)
+
+names(data)[!sapply(names(data), 
+                    function(x) 
+                      (x %in% c(
+                        dvs,
+                        names(df.clean),  # Those already used
+                        data %>% select(ends_with('updated')) %>% names(), # Those already used and renamed
+                        data %>% select(starts_with('age_')) %>% names(), # Age column was consolidated
+                        data %>% select(starts_with('Missing_')) %>% names(), # Missing columns aren't really necessary
+                        do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_')),
+                        'hh_cbsa_name', # this is renamed
+                        # Add in thous
+                        paste0(do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_')), '_thous'),
+                        BE_cols.other
+                      ))
+                    )]
+
+
+# 
+do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_'))[do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_')) %>% 
+                                                                    sapply(function(x) x %notin% names(data))] # "BusStopDens_half" "BusStopDens_one"  "NumBusStops_two"  "BusStopDens_two" 
+
+
+# Assign
+for(c in BE_cols.other) {
+  df.clean[c] <- data[c]
+}
+
+# Check
+BE_cols.std_expanded<- do.call(paste, c(expand.grid(BE_cols.std, BE_suffixes), sep='_'))
+
+
+BE_cols.std_expanded[sapply(BE_cols.std_expanded, \(x) x %notin% names(df.clean))]
+```
+
+```{r CBSA code}
+# CBSA Code
+df.clean$cbsa_code <- data$hh_cbsa_updated
+df.clean$cbsa_title <- setNames(cbsa_code_dict$cbsatitle, cbsa_code_dict$cbsacode)[df.clean$cbsa_code]
+
+MAJOR_CBSAS <- c('SAC' = 40900, 'LA_OC' = 31080, 'SD' = 41740, 'SF_OAK' = 41860, 'IE' = 40140, 'SJ' = 41940)
+
+df.clean$cbsa_consolidated <- if_else(df.clean$cbsa_code %in% MAJOR_CBSAS, set_names(names(MAJOR_CBSAS), MAJOR_CBSAS)[df.clean$cbsa_code], 'Other')
+
+# Double Check
+df.clean %>% select(cbsa_title, cbsa_consolidated) %>% table()
+```
+
+## Additional Columns
+Mostly the missing values columns, but let's check whatever wasn't included already
+```{r}
+
+
+```
+
+## Back Cleanup
+Go back and look at the dataset as a whole to see what needs to be immediately removed
+
+```{r dataset-cleanup}
+# Replace dollar signs in the column names
+df.clean <- df.clean %>% rename_with(\(x) str_replace(x, '\\$', ''))
+
+# Scale data by 1000s
+data %>% select(ends_with('thous'))
+df.clean %>% 
+  select(starts_with('PopDens'))
+
+# Which have nulls
+df.clean %>% 
+  summarize(across(everything(), \(x) sum(is.na(x)))) %>%
+  pivot_longer(everything()) %>%
+  filter(value != 0) # Basically just hhincome, cbsa_title
+
+# Now I want to see which columns didn't make it over
+names(data)
+```
+
+# Record Selection
+Choose which records to exclude outright - note: this section doesn't do anything, we are just exploring 
+```{r record-filtering}
+# Those with missing values
+data %>% 
+  summarize(across(starts_with('Missing'), sum)) %>% 
+  pivot_longer(everything()) %>%
+  arrange(value)
+
+## Missing Age: 119
+## Missing_HomeOwn: 11,
+
+# Do any still have infinite values
+data %>%
+  summarize(across(everything(), \(x) any(is.infinite(x)))) %>%
+  pivot_longer(everything()) %>%
+  filter(value)
+  
+```
+
+# Save File
+```{r save-file}
+df.clean %>% 
+  write_csv('data/clean_df_for_modeling.csv')
+```
