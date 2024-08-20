@@ -1,0 +1,467 @@
+---
+title: "model30"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r env}
+library(tidyverse)
+library(AER)
+library(ggplot2)
+library(scales)
+library(rlang)
+```
+
+# (30) Model 30
+
+- Same as Model 28 but only on people over 65 and hh-income under $75k
+
+## 30 - Data Prep
+```{r model30 modeling setup}
+# First set your demo controls. You can see in `5.2_modeling_setup.Rmd` that the 
+
+demos.bucket_type <- 'open_ended' # one of c('discrete', 'continuous', 'open_ended')
+demos.consolidate_vars <- FALSE # Use slimmer versions of columns
+
+demo_controls.30 <- c(
+  # Age 
+  switch(demos.bucket_type, 
+           discrete   = 'age_bucket',
+           open_ended = expr(starts_with('age_OE')),
+           continuous = 'age_est',
+           NA
+  ),
+  # HH_Income
+  switch(demos.bucket_type,
+         discrete   = 'hhincome_cat',
+         open_ended = expr(starts_with('hhincome_OE')),
+         continuous = 'hhincome_est',
+         NA
+  ),
+  'hhsize', 
+  # Education
+  switch(demos.bucket_type, 
+         discrete   = 'education',
+         open_ended = expr(starts_with('education_OE')), 
+         continuous = 'education',
+         NA),
+  # Sex
+  'sex' = if_else(demos.consolidate_vars, 'sex_consolidated', 'sex'), 
+  # Race
+  'race' = if_else(demos.consolidate_vars, 'race_consolidated', 'race'), 
+  # Ethnicity
+  'ethnicity',
+  # Home_Ownership
+  'homeown', 
+  # Young Children
+  'youngchildren',
+  'cbsa' = 'cbsa_consolidated' # see 5.1 for definition of this
+)
+
+# List the built environment variables you might want
+BE_vars.30 <- c('PopDens_two', 'RetDens_bg', 'distrail_walk_quarter', 'distrail_walk_one', 'NumBusStops_one', 'NetLoadDens_GF18_two', 'JobsWi45_transit_to_car_ratio', 
+                #'NumBusStops_bg',
+                'StreetDens_GF18_two' #'Missing_StreetDens_GF18_two'
+                #'IntersectionDens_OX24_two', 'Missing_IntersectionDens_OX24_two',
+)
+
+#demo_quo <- quo(!!!demo_controls)
+# Test
+demo_controls.30
+
+df.clean %>% select(!!!demo_controls.30)
+```
+
+## Pull dataset
+```{r model30 pull dataset}
+df.modeling30 <- 
+  df.clean %>% 
+  
+  # <-  Record Selection
+  filter(
+    vmt < 300, # removed: 109 ppl
+    age_OE___65_and_up == 1,
+    hhincome_OE____75k_and_up == 0 ### <- add this
+  ) %>%
+  
+  # Create new columns/features here
+  mutate(
+    JobsWi45_transit_to_car_ratio = JobsWithin45_Transit/JobsWithin45_Car,
+    has_youngchildren = if_else(youngchildren > 0, 1, 0),
+    major_cbsa = if_else(cbsa_code %in% MAJOR_CBSAS, 'major', 'minor')
+  ) %>%
+  
+  # Select the columns you want (this is fairly standard)
+  select(
+    id,
+    !!dv,
+    !!!BE_vars.30, # Note: the !!!'s just de-reference the elements you created in the above chunk
+    !!!demo_controls.30
+  ) %>%
+  
+  # Fix it so that Missing is a separate category for HH-Income, Education
+  mutate(
+    hhincome___Missing = abs(1 - hhincome_OE___NotMissing),
+    education___Missing = abs(1 - education_OE___NotMissing),
+    age___Missing = abs(1 - age_OE___NotMissing),
+  ) %>%
+  # And finally remove those unneeded columns
+  select(
+    -hhincome_OE___NotMissing, -education_OE___NotMissing, -age_OE___NotMissing,
+    # add unnecessary age columns
+    -c(age___Missing, age_OE___15_and_up, age_OE___25_and_up, age_OE___35_and_up, age_OE___45_and_up, age_OE___55_and_up, age_OE___65_and_up),
+    # add unnecessary hh-income columns
+    -c(hhincome___Missing, hhincome_OE____75k_and_up, hhincome_OE___100k_and_up, , hhincome_OE___125k_and_up, hhincome_OE___150k_and_up, hhincome_OE___200k_and_up)
+  )
+
+df.modeling30
+```
+
+### 30 - Scaling
+```{r model30 scaling}
+# Save the scaling values and summaries for future
+df.scalars.30 <- 
+  df.modeling30 %>%
+  select(!!!BE_vars.30) %>%
+  summarize(across(
+    everything(),
+    .fns = c('mean' = mean, 'sd' = sd, 'quartile1' = \(x) quantile(x, .25), 'median' = median, 'quartile3' = \(x) quantile(x, .75)),
+    .names = '{.col}___{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '___', names_to = c('col', 'name')) %>%
+  pivot_wider()
+
+df.scalars.30
+```
+
+
+### 30 - Add Interaction terms
+```{r model30 - add interaction terms}
+# This is a small helper function to make referencing the summary table from last chunk easier.
+get_summary_val <- function(var, metric, summary_tbl) {
+  summary_tbl[[which(summary_tbl$col == var), metric]]
+}
+
+# 'loadDens_X_RetDens_above_med' = if NetLoadDens and Retail Density are both above the median
+df.modeling30[['loadDens_X_RetDens_above_med']] <- if_else(
+    (df.modeling30$NetLoadDens_GF18_two > get_summary_val('NetLoadDens_GF18_two', 'median', df.scalars.30)) &
+      (df.modeling30$RetDens_bg > get_summary_val('RetDens_bg', 'median', df.scalars.30)),
+    1,0)
+
+# loadDens_X_BusStops_below_thresh = if NetLoadDens Z < -.59 and NumBusStops_one < median
+# NetLoadDens
+Z.thresh.NetLoad <- -.5
+thresh.NetLoad <- (Z.thresh.NetLoad * get_summary_val('NetLoadDens_GF18_two', 'sd', df.scalars.30)) +  get_summary_val('NetLoadDens_GF18_two', 'median', df.scalars.30)
+thresh.NumBusStops <- get_summary_val('NumBusStops_one', 'mean', df.scalars.30)
+
+df.modeling30[['loadDens_X_BusStops_below_thresh']] <- if_else(
+  (df.modeling30$NetLoadDens_GF18_two < thresh.NetLoad) &
+    (df.modeling30$NumBusStops_one < thresh.NumBusStops),
+  1, 
+  0
+)
+
+# add the new columns to the column list if they should be there
+BE_vars.30 <- c(BE_vars.30, 'loadDens_X_RetDens_above_med', 'loadDens_X_BusStops_below_thresh')
+```
+
+## 30 - Scaling (pt. 2)
+```{r model30 - scaling}
+# Now Scale the BE-cols
+BE_vars.30.to_scale <- c('PopDens_two', 'RetDens_bg', 'NetLoadDens_GF18_two', 'StreetDens_GF18_two','JobsWi45_transit_to_car_ratio', 'NumBusStops_one')
+
+# sanity check
+stopifnot(all(BE_vars.30.to_scale %in% BE_vars.30))
+
+# scale vars
+df.modeling30.scaled <- 
+  df.modeling30 %>%
+  mutate(across(
+    !!BE_vars.30.to_scale,
+    \(x) scale(x)[,1]  ## <- call standarize function on each column
+  ))
+```
+
+
+#### 30 - Model Setup & Run
+```{r model30 model setup}
+library(fastDummies)
+# dummify
+df.modeling30.dummies <- fastDummies::dummy_cols(df.modeling30.scaled, remove_selected_columns = TRUE, remove_most_frequent_dummy = FALSE)
+
+names.30 <- df.modeling30.dummies %>% names()
+
+# Set the base-vars, these are the baseline for the regression or default values upon which you add the coefficients. They will be removed from the dataset to avoid aliasing issues
+
+# Note: These are the default columns you will use below in the modeling!
+defaults_vars.30 <- 
+  c('cbsa' = 'Other',
+    'race' = 'White',
+    'homeown' = 'Own',
+    'sex' = 'Female',
+    'ethnicity' = 'Non-Hispanic'
+    )
+
+### 'cbsa' = 'Other' ----> 'cbsa_Other'
+vars_to_remove.30 <- purrr::imap_chr(defaults_vars.30, \(x, idx) paste0(idx, '_', x)) 
+
+# Set Vars
+vars.30 <- names.30[3:length(names.30)]
+vars.30 <- vars.30[vars.30 %notin% vars_to_remove.30]
+
+form.30 <- as.formula(paste(dv, '~', paste0(vars.30, collapse='+')))
+
+# Model
+model.30 <- AER::tobit(form.30, left=0, data=df.modeling30.dummies)
+
+# Check Model output
+summary(model.30)
+# NOTE: If you get an issue with "aliased" variables when trying to view the summary, it means that some variables can be composed of others. Thus you need to remove one of them. 
+
+# The test for aliasing is here - this will show you which columns are the problem, so either remove that one or the column that is equivalent that you'd prefer (e.g.)
+
+which(is.na(coef(model.30))) # If you're fine, this will just be "named integer(0)"
+
+# Save the raw output to an output file 
+model.30 %>%
+  tidy_tobit_model() %>%
+  write_csv('output/model30_raw.csv')
+
+model.30 %>%
+  tidy_tobit_model() %>%
+  write_csv('models/model30/model30_raw.csv')
+```
+
+### Set Variable Names
+```{r model30 - set variable names}
+new_names.30 <- 
+  names(coef(model.30)) %>%
+  # Write out Race groups
+  str_replace('AfAm', 'African-American') %>%
+  str_replace('Asian', 'Asian') %>%
+  str_replace('PI', 'Pacific Islander') %>%
+  str_replace('Multi', 'Multiple Races') %>%
+  # Distance Bands
+  str_replace('_two', ' (2mi)') %>%
+  str_replace('_one', ' (1mi)') %>%
+  str_replace('_3quarter', ' (.75mi)') %>%
+  str_replace('_one', ' (.5mi)') %>%
+  str_replace('_3eighth', ' (.375mi)') %>%
+  str_replace('_quarter', ' (.25mi)') %>%
+  str_replace('_eighth', ' (.125mi)') %>%
+  str_replace('_bg', ' (bg)') %>%
+  # Open-Ended
+  str_replace('hhincome_OE___', 'HH-Income: $') %>%
+  str_replace('hhincome___', 'HH-Income: ') %>%
+  str_replace('education_OE___', 'Education: ') %>%
+  str_replace('education___', 'Education: ') %>%
+  str_replace('age___', 'Age:') %>%
+  str_replace('age_OE___', 'Age: ') %>%
+  str_replace('\\$NotMissing', 'NotMissing') %>%
+  str_replace('hhsize', 'HH-Size') %>%
+  str_replace('OX24 ','') %>%
+  str_replace('race', 'Race:') %>%
+  str_replace('ethnicity', 'Ethnicity:') %>%
+  str_replace('homeown', 'Home:') %>%
+  str_replace('AI_Other_Multiple', 'AI/Other/Multiple') %>%
+  str_replace('sex', 'Sex:') %>%
+  # Constructed Vars
+  str_replace('JobsWi45_transit_to_car_ratio', 'Jobs w/i 45min (transit to car)') %>%
+  str_replace('loadDens_X_RetDens_above_med', 'LoadDens & RetDens > Med') %>%
+  str_replace('loadDens_X_BusStops_below_thresh', 'LoadDens & BusStops < Treshhold') %>%
+  str_replace_all('_', ' ') %>%
+  #str_replace('and up', 'plus') %>%
+  str_replace('\\$ ', ' $') %>%
+  # Other
+  str_replace('youngchildren TRUE', 'Has Young Children') %>%
+  str_replace('youngchildren', '# Young Children') %>%
+  str_replace('distrail walk', 'Has Rail Access Walk') %>%
+  # CBSA
+  str_replace('cbsa SF OAK', 'CBSA: San Francisco-Oakland') %>% 
+  str_replace('cbsa SAC', 'CBSA: Sacramento') %>% 
+  str_replace('cbsa LA OC', 'CBSA: Los Angeles/OC') %>% 
+  str_replace('cbsa IE', 'CBSA: Riverside') %>% 
+  str_replace('cbsa SJ', 'CBSA: San Jose') %>% 
+  str_replace('cbsa SD', 'CBSA: San Diego') %>%
+  I()
+new_names.30 <- set_names(names(coef(model.30)), new_names.30)
+new_names.30
+
+# Test output
+model.30 %>%
+  tidy_tobit_model() %>%
+  filter(p.value < .05) %>%
+  print(n = 26)
+```
+
+### Set up the plotting df
+#### 30 - Setup Plotting DF
+```{r model30 generate plot df}
+# Create Plotting DF
+model.30.pltdf <- 
+  model.30 %>%
+  tidy_tobit_model() %>% 
+  # Add Stars
+  mutate(
+    signif_stars = 
+      symnum(p.value,
+       symbols   = c("***","**","*","·",""),
+       cutpoints = p_cutpoints,
+       corr      = FALSE
+    ),
+    signif_level = 
+      symnum(p.value,
+       symbols   = paste0('<' , tail(p_cutpoints, -1)),
+       cutpoints = p_cutpoints, 
+       corr      = FALSE
+    ),
+    # Set Display Names
+    Term = if_else(is.na(set_names(names(new_names.30), new_names.30)[v]), v, set_names(names(new_names.30), new_names.30)[v]), # <-- uses `new_names25` from previous chunk
+    grp = sapply(str_split(Term, ':'), \(x) x[[1]]), # <- first try just splitting on :
+    ### CHECK HERE FOR ERRORS: this is sloppy
+    grp = case_when(grp %in% c('Age','HH-Income','Education','Race','Ethnicity','Sex','CBSA','Home') ~ grp,
+                    grp %in% c('# Young Children','HH-Size', 'Has Young Children') ~ 'Family',
+                    grp %in% c('(Intercept)', 'Log(scale)') ~ 'Model',
+                    .default = 'Built-Env.'),
+    # Note: this levels argument determines the order the groups will display in
+    grp = factor(grp, levels = c('Built-Env.','Model','Race','Ethnicity','Sex', 'Age','HH-Income','Education','Family','Home','CBSA')) 
+  ) %>%
+  select(grp, everything())
+
+# Add in means and sds
+var_summaries.30 <- 
+  # Calculate mean and sd from the scaled table
+  df.modeling30.dummies %>%
+  select(-id, -vmt) %>%
+  summarize(across(
+    where(is.numeric),
+    .fns = c('mean' = mean, 'sd' = sd),
+    .names = '{.col}_____{.fn}'
+  )) %>%
+  pivot_longer(everything(), names_sep = '_____', names_to = c('col', 'name')) %>%
+  pivot_wider() %>%
+  # Now grab the prescaled values from the scalar df
+  left_join(
+    df.scalars.30,
+    by = c('col'='col'),
+    suffix = c('', '.prescaled')
+  ) %>%
+  mutate(
+    # Here coalesce takes the prescaled value where it exists
+    mean = coalesce(mean.prescaled, mean),
+    sd = coalesce(sd.prescaled, sd)
+  ) %>%
+  select(-ends_with('.prescaled'))
+  
+# Now add the scaled data as additional columns
+model.30.pltdf <-
+  model.30.pltdf %>%
+  left_join(
+    var_summaries.30,
+    by = c('v' = 'col')
+  )
+
+# Numericize the distance band into a column and then sort by it
+BLOCK_GROUP_SENTINEL_VALUE <- '.001'
+model.30.pltdf$dist_band<- model.30.pltdf$Term %>%
+  str_replace('\\(bg\\)', paste0('(', BLOCK_GROUP_SENTINEL_VALUE, 'mi)')) %>%
+  str_extract( '\\([^\\d]*(\\d+)[^\\d]*\\)') %>%
+  str_replace('mi\\)','') %>%
+  str_replace('\\(', '') %>%
+  as.numeric()
+
+model.30.pltdf <- 
+  model.30.pltdf %>%
+  arrange(grp, desc(dist_band))
+
+
+model.30.pltdf <- 
+  model.30.pltdf %>%
+  mutate(grp2 = case_when(is.na(dist_band) ~ 'Other',
+                          dist_band == as.numeric(BLOCK_GROUP_SENTINEL_VALUE) ~ 'Block Grp',
+                          .default = paste0(scales::number(dist_band),'mi')
+                )) %>%
+    # Overwrite `grp` with `grp2`, use the levels argument to set the order you want things to display in
+  mutate(dist_band_fct = factor(grp2, levels = c('2.00mi', '1.00mi','0.75mi','0.5mi','0.375mi','0.25mi','Block Grp','Other'))) %>%
+  select(-grp2)
+
+# Join in VIF
+vif.30 <- tibble(var = names(car::vif(model.30)), vif=car::vif(model.30))
+
+model.30.pltdf <-
+  model.30.pltdf %>%
+  inner_join(
+    vif.30,
+    'by' = c('v' = 'var')
+  )
+
+#View(model17.pltdf)
+model.30.pltdf
+```
+
+
+### 30 -  Set Default Value
+This sets the default value that will display in the charts. This is normally the largest group within a regression - its the group that was removed in the modeling section above
+```{r model30 set default vals}
+model.30.pltdf <- 
+  model.30.pltdf %>% 
+    mutate(
+      default_val = case_when(
+        grp == 'Built-Env.' ~ '', 
+        grp == 'Ethnicity' ~ 'Non-Hispanic', 
+        grp == 'Sex' ~ "Female", 
+        grp %in% c('Age','HH-Income','Education') ~ "Not Missing", 
+        grp == 'Race' ~ "White", 
+        .default = "Other")) %>% 
+    mutate(default_val = if_else(default_val == '', 
+                                 'N/A', 
+                                 paste0('[', default_val,']'))) %>% 
+  select(grp, v, Term, default_val, everything())
+```
+
+
+### 30 - Visualize
+```{r model30 all-std-viz}
+# VIF Plot
+### Fairly standard, internal so not much to mess around with
+### Interpret: this plot will show you the degree of multi-collinearity in the regression. Anything over 5 is usually highly correlated with another variable (or set of variables) in the model and thus could be a potential candidate for exclusion
+plot_vif(model.30.pltdf, title = 'Model 30: VIF')
+
+# Corrplot
+### Similar - internal so its a simple plot
+BE_vars.30.names <- set_names(
+  model.30.pltdf[model.30.pltdf$grp == 'Built-Env.', ]$v,
+  model.30.pltdf[model.30.pltdf$grp == 'Built-Env.', ]$Term 
+)
+plot_corrplot(df.modeling30.dummies, vars_named = BE_vars.30.names, title = 'Model 30: (65+, < $75k) - CorrPlot')
+
+# Coefs
+model.30.pltdf %>% 
+  plot_regression_coefs(remove_missing_flags = TRUE, title = 'Model 30 (65+, < $75k) - Regression Coefficients (full)') + # for standard plots, not much to play around with
+  theme( 
+    # Increase font size
+    strip.text = element_text(size = 14),
+    panel.text = element_text(size = 14)
+  )
+  
+# BE-Coefs
+### - this one is a little more complicated
+model.30.pltdf %>%
+  # Filter to only those significant at the 10% level and only those in BE grp
+  filter(
+    p.value < .1,
+    grp == 'Built-Env.'
+    ) %>% 
+  # Overwrite `grp` with `dist_band_fct`
+  mutate(grp = dist_band_fct) %>%
+  # Plot
+  plot_regression_coefs(
+    title = 'Model 30 (65+, < $75k) - Regression Coefficients (BE)', # for BE, you want to change some of the input flags
+    hide_nonprimary_grps = FALSE, display_summaries = FALSE, 
+    add_labels=TRUE, add_demarcation_lines = FALSE, add_column_headers = FALSE
+  ) +
+  # Additional formatting
+  facet_grid(grp~., scales='free', space='free_y', switch='y') + 
+  theme(axis.text.y = element_text(size=14))
+```
