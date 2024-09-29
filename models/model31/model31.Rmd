@@ -20,6 +20,33 @@ library(rlang)
   - add a interactive dummy if over 65 and under75k
 
 ## 31 - Data Prep
+### Add fake Block Group ID to test for Std error clustering
+```{r}
+# We're gonna spoof the bg
+bg_distinct_measures <- df.clean %>% distinct(across(ends_with('_bg')))
+bg_distinct_measures$bg_fakeid <- paste0('bgfid_', seq.int(nrow(bg_distinct_measures)))
+
+bgfid.JOIN_COLS <- head(names(bg_distinct_measures), -1)
+names(bgfid.JOIN_COLS) <- bgfid.JOIN_COLS
+bgfid.JOIN_COLS
+
+# id_2_bgfid <- 
+#   df.clean %>%
+#   inner_join(
+#     bg_distinct_measures,
+#     by = bgfid.JOIN_COLS
+#   ) %>%
+#   select(id, bg_fakeid)
+
+# Now join in
+# df.clean <- 
+#   df.clean %>%
+#   inner_join(
+#     id_2_bgfid,
+#     by = 'id'
+  # )
+```
+
 ```{r model31 modeling setup}
 # First set your demo controls. You can see in `5.2_modeling_setup.Rmd` that the 
 
@@ -58,7 +85,7 @@ demo_controls.31 <- c(
   'homeown', 
   # Young Children
   'youngchildren',
-  'cbsa' = 'cbsa_consolidated' # see 5.1 for definition of this
+  'cbsa' = 'cbsa_consolidated' # see 2.1 for definition of this
   
 )
 
@@ -102,8 +129,8 @@ df.modeling31 <-
     !!dv,
     !!!BE_vars.31, # Note: the !!!'s just de-reference the elements you created in the above chunk
     !!!demo_controls.31,
-    age_65plus_X_income_under75k
-    
+    age_65plus_X_income_under75k,
+    bg_fakeid
   ) %>%
   
   # Fix it so that Missing is a separate category for HH-Income, Education
@@ -188,13 +215,23 @@ df.modeling31.scaled <-
 ```
 
 
+
+
 #### 31 - Model Setup & Run
 ```{r model31 model setup}
 library(fastDummies)
 # dummify
-df.modeling31.dummies <- fastDummies::dummy_cols(df.modeling31.scaled, remove_selected_columns = TRUE, remove_most_frequent_dummy = FALSE)
+df.modeling31.dummies <- fastDummies::dummy_cols(df.modeling31.scaled %>% select(-bg_fakeid), remove_selected_columns = TRUE, remove_most_frequent_dummy = FALSE)
 
 names.31 <- df.modeling31.dummies %>% names()
+
+# add the id back in
+df.modeling31.dummies2 <- 
+  df.modeling31.dummies %>%
+  inner_join(
+    id_2_bgfid,
+    by = 'id'
+  )
 
 # Set the base-vars, these are the baseline for the regression or default values upon which you add the coefficients. They will be removed from the dataset to avoid aliasing issues
 
@@ -217,7 +254,17 @@ vars.31 <- vars.31[vars.31 %notin% vars_to_remove.31]
 form.31 <- as.formula(paste(dv, '~', paste0(vars.31, collapse='+')))
 
 # Model
-model.31 <- AER::tobit(form.31, left=0, data=df.modeling31.dummies)
+model.31 <- AER::tobit(
+  form.31, 
+  left=0, 
+  data=df.modeling31.dummies2,
+  robust = TRUE
+)
+
+# Check for clustering
+sandwich::vcovCL(model.31, cluster = ~ bg_fakeid) # 
+coeftest(model.31, vcov.=vcovCL(model.31, cluster=rownames(bgfid), type="HC0"))
+
 
 # Check Model output
 summary(model.31)
@@ -469,4 +516,21 @@ model.31.pltdf %>%
   # Additional formatting
   facet_grid(grp~., scales='free', space='free_y', switch='y') + 
   theme(axis.text.y = element_text(size=14))
+```
+
+## 31 - Clustering on BG
+```{r}
+model31.clustered.vcovCL.out <- sandwich::vcovCL(model.31, cluster = ~ bg_fakeid) # 
+model31.clustered.coeftest <- coeftest(model.31, vcovCL(model.31, cluster = ~ bg_fakeid)) # 
+#coeftest(model.31, vcov.=vcovCL(model.31, cluster=rownames(bg_fakeid), type="HC0"))
+
+model31.clustered.sandwich.out
+model31.clustered.coeftest
+
+# Running again with `coefci`
+model31.CIs <- coefci(model.31, vcov = vcovCL, cluster = ~bg_fakeid)
+model31.CIs
+
+m1coeffs_with_clse
+
 ```
